@@ -55,11 +55,11 @@ end
   ["build:rpm_old_config", "Create configuration files for Red Hat like systems without systemd"],
   ["build:all",        "Install all components"],
   ["apt:build",        "Build deb packages"],
-  ["apt:fluentd-build","Build fluentd deb packages"],
+  ["apt:fluentd_build","Build fluentd deb packages", FLUENTD_PACKAGES],
   ["yum:build",        "Build RPM packages"],
-  ["yum:fluentd-build","Build fluentd RPM packages"],
+  ["yum:fluentd_build","Build fluentd RPM packages", FLUENTD_PACKAGES],
   ["msi:build",        "Build MSI package (alias for msi:dockerbuild)"],
-  ["msi:fluentd-build","Build fluentd MSI package (alias for msi:dockerbuild)"],
+  ["msi:fluentd_build","Build fluentd MSI package (alias for msi:dockerbuild)", FLUENTD_PACKAGES],
   ["msi:selfbuild",    "Build MSI package without using Docker"],
   ["msi:dockerbuild",  "Build MSI package by Docker"],
   ["dmg:selfbuild",    "Build macOS package without using Docker"],
@@ -69,7 +69,7 @@ end
 
 [
   ["apt:build", "Build td-agent-apt-source deb packages", APT_SOURCE_PACKAGES],
-  ["apt:fluentd-build", "Build fluentd-apt-source deb packages", FLUENTD_APT_SOURCE_PACKAGES],
+  ["apt:fluentd_build", "Build fluentd-apt-source deb packages", FLUENTD_APT_SOURCE_PACKAGES],
 ].each do |params|
   define_bulked_task(*params)
 end

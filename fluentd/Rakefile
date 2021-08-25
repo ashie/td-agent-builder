@@ -683,7 +683,7 @@ class BuildTask
     end
 
     mkdir_p(openssldir)
-    # Install cert.pem into install_prefix/etc/openssl and staging/opt/td-agent/etc/openssl/cert.pem.
+    # Install cert.pem into install_prefix/etc/openssl and staging/opt/fluentd/etc/openssl/cert.pem.
     [File.join(openssldir, "cert.pem"), File.join(install_prefix, "etc", "openssl", "cert.pem")].each do |path|
       File.open(path, 'w', 0644) do |f|
         f.write(valid_certificates.join("\n") << "\n")
@@ -996,7 +996,7 @@ class BuildTask
     ensure_directory(staging_sharedir) do
       ["Gemfile", "Gemfile.lock", "config.rb"].each do |file|
         source_dir = File.join(__dir__, "..")
-        src = File.join(source_dir, "td-agent/#{file}")
+        src = File.join(source_dir, "fluentd/#{file}")
         dest = File.join(staging_sharedir, file)
         cp(src, dest)
       end
@@ -1093,12 +1093,12 @@ class LinuxPackageTask < PackageTask
       File.join("..", path)
     end
 
-    debian_copyright_file = File.join("td-agent", "debian", "copyright")
+    debian_copyright_file = File.join("fluentd", "debian", "copyright")
     file debian_copyright_file do
       build_copyright_file
     end
 
-    debian_include_binaries_file = File.join("td-agent", "debian", "source", "include-binaries")
+    debian_include_binaries_file = File.join("fluentd", "debian", "source", "include-binaries")
     file debian_include_binaries_file do
       build_include_binaries_file
     end
@@ -1111,9 +1111,9 @@ class LinuxPackageTask < PackageTask
 
   def build_copyright_file
     # Note: maintain debian/copyright manually is inappropriate way because
-    # many gem is bundled with td-agent package.
+    # many gem is bundled with fluentd package.
     # We use gem specification GEMFILE to solve this issue.
-    src = File.join("templates", "package-scripts", "td-agent", "deb", "copyright")
+    src = File.join("templates", "package-scripts", "fluentd", "deb", "copyright")
     dest = File.join("debian", "copyright")
     licenses = []
     @download_task.files_ruby_gems.each do |gem_file|
@@ -1217,7 +1217,7 @@ EOS
         # build debian/copyright. Probably it should be built in the build container.
         cp_r(path, dest_dir) unless path.end_with?(".gem")
       end
-      cp_r("td-agent/debian/copyright", "#{@archive_base_name}/td-agent/debian/copyright")
+      cp_r("fluentd/debian/copyright", "#{@archive_base_name}/fluentd/debian/copyright")
       sh("tar", "cvfz", @full_archive_name, @archive_base_name)
       rm_rf(@archive_base_name)
     end
