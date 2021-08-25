@@ -18,14 +18,22 @@
 PACKAGES = [
   "td-agent",
 ]
+FLUENTD_PACKAGES = [
+  "fluentd",
+]
 
 APT_SOURCE_PACKAGES = [
   "td-agent-apt-source"
+]
+FLUENTD_APT_SOURCE_PACKAGES = [
+  "fluentd-apt-source"
 ]
 
 ALL_PACKAGE = [
   "td-agent",
   "td-agent-apt-source",
+  "fluentd",
+  "fluentd-apt-source",
 ]
 
 def define_bulked_task(name, description, packages = PACKAGES)
@@ -47,8 +55,11 @@ end
   ["build:rpm_old_config", "Create configuration files for Red Hat like systems without systemd"],
   ["build:all",        "Install all components"],
   ["apt:build",        "Build deb packages"],
+  ["apt:fluentd-build","Build fluentd deb packages"],
   ["yum:build",        "Build RPM packages"],
+  ["yum:fluentd-build","Build fluentd RPM packages"],
   ["msi:build",        "Build MSI package (alias for msi:dockerbuild)"],
+  ["msi:fluentd-build","Build fluentd MSI package (alias for msi:dockerbuild)"],
   ["msi:selfbuild",    "Build MSI package without using Docker"],
   ["msi:dockerbuild",  "Build MSI package by Docker"],
   ["dmg:selfbuild",    "Build macOS package without using Docker"],
@@ -58,6 +69,7 @@ end
 
 [
   ["apt:build", "Build td-agent-apt-source deb packages", APT_SOURCE_PACKAGES],
+  ["apt:fluentd-build", "Build fluentd-apt-source deb packages", FLUENTD_APT_SOURCE_PACKAGES],
 ].each do |params|
   define_bulked_task(*params)
 end
