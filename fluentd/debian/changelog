@@ -1,0 +1,59 @@
+td-agent (4.2.0-1) unstable; urgency=low
+
+  * New upstream release.
+
+ -- Takuro Ashie <ashie@clear-code.com>  Wed, 14 Jul 2021 07:24:29 -0000
+
+td-agent (4.1.1-1) unstable; urgency=low
+
+  * New upstream release.
+
+ -- Takuro Ashie <ashie@clear-code.com>  Wed, 07 Apr 2021 09:37:18 -0000
+
+td-agent (4.1.0-1) unstable; urgency=low
+
+  * New upstream release.
+
+ -- Masahiro Nakagawa <repeatedly@gmail.com>  Fri, 19 Feb 2021 01:18:27 -0000
+
+td-agent (4.0.1-1) unstable; urgency=low
+
+  * New upstream release.
+
+ -- Masahiro Nakagawa <repeatedly@gmail.com>  Fri, 07 Aug 2020 09:03:45 -0000
+
+td-agent (4.0.0-1) unstable; urgency=low
+
+  * New upstream release.
+
+ -- Masahiro Nakagawa <repeatedly@gmail.com>  Tue, 30 Jun 2020 13:33:10 -0000
+
+td-agent (4.0.0~rc1-1) unstable; urgency=low
+
+  * New upstream release.
+
+ -- Masahiro Nakagawa <repeatedly@gmail.com>  Fri, 22 May 2020 14:15:38 -0000
+
+td-agent (3.7.1-1) unstable; urgency=low
+
+  * New upstream release.
+
+ -- Takuro Ashie <ashie@clear-code.com>  Wed, 06 May 2020 00:18:15 -0000
+
+td-agent (3.7.0-1) unstable; urgency=low
+
+  * New upstream release.
+
+ -- Hiroshi Hatake <hatake@clear-code.com>  Tue, 07 Apr 2020 11:27:14 +0900
+
+td-agent (3.6.0-1) unstable; urgency=low
+
+  * New upstream release.
+
+ -- Takuro Ashie <ashie@clear-code.com>  Tue, 25 Feb 2020 05:38:16 -0000
+
+td-agent (3.5.1-1) UNRELEASED; urgency=low
+
+  * New upstream release.
+
+ -- Hiroshi Hatake <hatake@clear-code.com>  Mon, 06 Jan 2020 06:55:08 -0000

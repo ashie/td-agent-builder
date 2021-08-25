@@ -1,0 +1,23 @@
+#!/bin/bash
+#
+# Create directories for <%= project_name %>
+#
+
+# Create <%= project_name %> related directories and files
+
+if [ ! -e "/var/log/<%= project_name %>/" ]; then
+  mkdir -p /var/log/<%= project_name %>/
+  mkdir -p /var/log/<%= project_name %>/buffer/
+fi
+if [ ! -e "/var/run/<%= project_name %>/" ]; then
+  mkdir -p /var/run/<%= project_name %>/
+fi
+if [ ! -e "/etc/<%= project_name %>/" ]; then
+  mkdir -p /etc/<%= project_name %>/
+  mkdir -p /etc/<%= project_name %>/plugin
+fi
+if [ ! -e "/tmp/<%= project_name %>/" ]; then
+  mkdir -p /tmp/<%= project_name %>/
+fi
+
+exit 0

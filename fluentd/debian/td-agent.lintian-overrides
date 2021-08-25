@@ -1,0 +1,33 @@
+td-agent: windows-devel-file-in-package
+td-agent: ruby-script-but-no-ruby-dep
+td-agent: script-not-executable
+td-agent: python-script-but-no-python-dep
+td-agent: executable-not-elf-or-script
+td-agent: missing-dep-for-interpreter
+td-agent: gz-file-not-gzip
+td-agent: no-upstream-changelog
+td-agent: library-not-linked-against-libc
+td-agent: wrong-path-for-interpreter
+td-agent: duplicate-font-file
+td-agent: jar-not-in-usr-share
+td-agent: possibly-insecure-handling-of-tmp-files-in-maintainer-script
+td-agent: maintainer-script-should-not-use-recursive-chown-or-chmod
+td-agent: unusual-interpreter opt/td-agent/lib/ruby/gems/*/gems/bundler-*/lib/bundler/templates/Executable #!<%=
+td-agent: unusual-interpreter opt/td-agent/lib/ruby/gems/*/gems/bundler-*/lib/bundler/templates/Executable.bundler #!<%=
+td-agent: unusual-interpreter opt/td-agent/lib/ruby/gems/*/gems/bundler-*/lib/bundler/templates/Executable.standalone #!<%=
+td-agent: incorrect-path-for-interpreter opt/td-agent/bin/jeprof (#!/usr/bin/env perl != /usr/bin/perl)
+td-agent: uses-dpkg-database-directly postinst (line 37)
+td-agent: uses-dpkg-database-directly postinst (line 40)
+td-agent: unusual-interpreter opt/td-agent/lib/ruby/*/bundler/templates/Executable #!<%=
+td-agent: unusual-interpreter opt/td-agent/lib/ruby/*/bundler/templates/Executable.bundler #!<%=
+td-agent: unusual-interpreter opt/td-agent/lib/ruby/*/bundler/templates/Executable.standalone #!<%=
+td-agent: package-contains-vcs-control-file
+td-agent: binary-or-shlib-defines-rpath opt/td-agent/lib/ruby/gems/*/extensions/x86_64-linux/*/nokogiri-*/nokogiri/nokogiri.so /build/td-agent-*/debian/tmp/opt/td-agent/lib/ruby/gems/*/gems/nokogiri-*/ports/x86_64-pc-linux-gnu/libxml2/*/lib
+td-agent: binary-or-shlib-defines-rpath opt/td-agent/lib/ruby/gems/*/extensions/x86_64-linux/*/nokogiri-*/nokogiri/nokogiri.so /build/td-agent-*/debian/tmp/opt/td-agent/lib/ruby/gems/*/gems/nokogiri-*/ports/x86_64-pc-linux-gnu/libxslt/*/lib
+td-agent: binary-or-shlib-defines-rpath opt/td-agent/lib/ruby/gems/*/gems/nokogiri-*/lib/nokogiri/nokogiri.so /build/td-agent-*/debian/tmp/opt/td-agent/lib/ruby/gems/*/gems/nokogiri-*/ports/x86_64-pc-linux-gnu/libxslt/*/lib
+td-agent: binary-or-shlib-defines-rpath opt/td-agent/lib/ruby/gems/*/gems/nokogiri-*/ext/nokogiri/nokogiri.so /build/td-agent-*/debian/tmp/opt/td-agent/lib/ruby/gems/*/gems/nokogiri-*/ports/x86_64-pc-linux-gnu/libxslt/*/lib
+td-agent: binary-or-shlib-defines-rpath opt/td-agent/lib/ruby/gems/*/gems/nokogiri-*/ext/nokogiri/nokogiri.so /build/td-agent-*/debian/tmp/opt/td-agent/lib/ruby/gems/*/gems/nokogiri-*/ports/x86_64-pc-linux-gnu/libxml2/*/lib
+td-agent: binary-or-shlib-defines-rpath opt/td-agent/lib/ruby/gems/*/gems/nokogiri-*/lib/nokogiri/nokogiri.so /build/td-agent-*/debian/tmp/opt/td-agent/lib/ruby/gems/*/gems/nokogiri-*/ports/x86_64-pc-linux-gnu/libxml2/*/lib
+td-agent: embedded-library opt/td-agent/lib/ruby/gems/*/extensions/x86_64-linux/*/nokogiri-*/nokogiri/nokogiri.so: libxml2
+td-agent: embedded-library opt/td-agent/lib/ruby/gems/*/gems/nokogiri-*/ext/nokogiri/nokogiri.so: libxml2
+td-agent: embedded-library opt/td-agent/lib/ruby/gems/*/gems/nokogiri-*/lib/nokogiri/nokogiri.so: libxml2

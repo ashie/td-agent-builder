@@ -1,0 +1,42 @@
+#!/usr/bin/make -f
+# -*- makefile-gmake -*-
+#
+# Uncomment this to turn on verbose mode.
+#export DH_VERBOSE=1
+# This has to be exported to make some magic below work.
+export DH_OPTIONS
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	gpg \
+	  --no-default-keyring \
+	  --keyring ./td-agent-archive-keyring.gpg \
+	  --import keys
+
+	( \
+	  distribution=$$(lsb_release --id --short | tr 'A-Z' 'a-z'); \
+	  code_name=$$(lsb_release --codename --short); \
+	  if [ $${distribution} = "ubuntu" ]; then \
+	    component=contrib; \
+	  else \
+	    component=main; \
+	  fi; \
+	  echo "Types: deb"; \
+	  echo "URIs: http://packages.treasuredata.com/4/$${distribution}/$${code_name}/"; \
+	  echo "Suites: $${code_name}"; \
+	  echo "Components: contrib"; \
+	  echo "Signed-By: /usr/share/keyrings/td-agent-archive-keyring.gpg"; \
+	) > td-agent.sources
+
+override_dh_install:
+	install -d debian/tmp/usr/share/keyrings/
+	install -m 0644 td-agent-archive-keyring.gpg \
+	  debian/tmp/usr/share/keyrings/
+
+	install -d debian/tmp/etc/apt/sources.list.d/
+	install -m 0644 td-agent.sources \
+	  debian/tmp/etc/apt/sources.list.d/
+
+	dh_install

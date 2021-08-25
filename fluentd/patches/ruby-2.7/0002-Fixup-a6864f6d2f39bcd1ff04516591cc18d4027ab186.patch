@@ -1,0 +1,30 @@
+From 69731b248f12f52c3897584db914cdf04a8ce5ac Mon Sep 17 00:00:00 2001
+From: Hiroshi SHIBATA <hsbt@ruby-lang.org>
+Date: Wed, 1 Jan 2020 07:53:27 +0900
+Subject: [PATCH 2/2] Fixup a6864f6d2f39bcd1ff04516591cc18d4027ab186
+
+---
+ lib/racc/racc.gemspec | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/lib/racc/racc.gemspec b/lib/racc/racc.gemspec
+index 6beb16c5b4..6ed031bfe1 100644
+--- a/lib/racc/racc.gemspec
++++ b/lib/racc/racc.gemspec
+@@ -16,11 +16,11 @@
+   s.email = [nil, "aaron@tenderlovemaking.com"]
+   s.homepage = "http://i.loveruby.net/en/projects/racc/"
+   s.licenses = ["MIT"]
+-  s.executables = ["racc", "racc2y", "y2racc"]
++  s.executables = ["racc"]
+   s.files = [
+     "COPYING", "ChangeLog", "DEPENDS", "Manifest.txt",
+     "README.ja.rdoc", "README.rdoc", "Rakefile", "TODO", "bin/racc",
+-    "bin/racc2y", "bin/y2racc", "ext/racc/MANIFEST",
++    "ext/racc/MANIFEST",
+     "ext/racc/com/headius/racc/Cparse.java", "ext/racc/cparse.c",
+     "ext/racc/depend", "ext/racc/extconf.rb", "fastcache/extconf.rb",
+     "fastcache/fastcache.c", "lib/racc.rb", "lib/racc/compat.rb",
+-- 
+2.20.1
+

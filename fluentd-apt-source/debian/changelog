@@ -1,0 +1,5 @@
+td-agent-apt-source (2020.8.25-1) unstable; urgency=low
+
+  * New upstream release.
+
+ -- Kentaro Hayashi <hayashi@clear-code.com>  Tue, 25 Aug 2020 10:43:00 +0900

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="1">
+    <title>Td-agent v<%= pkg_version %></title>
+    <background file="background.png" alignment="bottomleft" mime-type="image/png"/>
+    <license file="license.rtf" mime-type="text/html"/>
+    <welcome file="welcome.html" mime-type="text/html"/>
+    <pkg-ref id="com.treasuredata.tdagent"/>
+    <options customize="never" require-scripts="false"/>
+    <choices-outline>
+        <line choice="default">
+            <line choice="com.treasuredata.tdagent"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="com.treasuredata.tdagent" visible="false">
+        <pkg-ref id="com.treasuredata.tdagent"/>
+    </choice>
+    <pkg-ref id="com.treasuredata.tdagent" version="<%= version %>" onConclusion="none">td-agent.pkg</pkg-ref>
+</installer-gui-script>

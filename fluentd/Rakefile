@@ -1,0 +1,1633 @@
+#!/usr/bin/env rake
+#
+# fluent-package-builder
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+
+require_relative '../lib/package-task'
+require_relative 'config.rb'
+require 'rake/testtask'
+require 'rake/clean'
+require 'erb'
+require 'shellwords'
+require 'pathname'
+require 'open-uri'
+require 'open3'
+require 'digest'
+require 'etc'
+require 'yaml'
+require 'bundler'
+require 'logger'
+require 'find'
+
+DOWNLOADS_DIR  = File.expand_path("downloads")
+STAGING_DIR    = File.expand_path(ENV["TD_AGENT_STAGING_PATH"]   || "staging")
+
+@logger = Logger.new(STDOUT, Logger::Severity::INFO)
+if ENV["TD_AGENT_LOG_LEVEL"] and ENV["TD_AGENT_LOG_LEVEL"] == "debug"
+  @logger = Logger.new(STDOUT, Logger::Severity::DEBUG)
+end
+
+CLEAN.include(STAGING_DIR)
+CLOBBER.include(DOWNLOADS_DIR)
+CLOBBER.include("vendor")
+
+# Debian
+CLEAN.include("apt/tmp")
+CLEAN.include("apt/build.sh")
+CLEAN.include("apt/env.sh")
+CLEAN.include("debian/tmp")
+CLOBBER.include("apt/repositories")
+
+# Red Hat
+CLEAN.include("yum/tmp")
+CLEAN.include("yum/build.sh")
+CLEAN.include("yum/env.sh")
+CLOBBER.include("yum/repositories")
+
+# Windows
+CLEAN.include("msi/env.bat")
+CLEAN.include("msi/parameters.wxi")
+CLEAN.include("msi/project-files.wxs")
+CLEAN.include("msi/*.wixobj")
+CLEAN.include("msi/*.wixpdb")
+CLOBBER.include("msi/*.msi")
+
+# macOS
+CLEAN.include("dmg/td-agent.icns")
+CLEAN.include("dmg/td-agent.rsrc")
+CLEAN.include("dmg/resources/pkg/Distribution.xml")
+CLEAN.include("dmg/resources/pkg/scripts/postinstall")
+CLEAN.include("dmg/resources/dmg/td-agent.osascript")
+CLOBBER.include("dmg/*.pkg")
+CLOBBER.include("dmg/*.dmg")
+CLOBBER.include("dmg/td-agent.iconset")
+CLOBBER.include("dmg/dmg")
+
+def windows?
+  /mswin|mingw/ =~ RUBY_PLATFORM
+end
+
+def macos?
+  /darwin/ =~ RUBY_PLATFORM
+end
+
+def ensure_directory(dirname)
+  mkdir_p(dirname) unless File.exists?(dirname)
+  if block_given?
+    cd(dirname) do
+      yield
+    end
+  end
+end
+
+def install_prefix
+  "/opt/#{PACKAGE_NAME}"
+end
+
+def gem_dir_suffix
+  "lib/ruby/gems/#{gem_dir_version}"
+end
+
+def gem_dir_version
+  if windows?
+    ruby_version = BUNDLED_RUBY_INSTALLER_X64_VERSION
+  else
+    ruby_version = BUNDLED_RUBY_VERSION
+  end
+  rb_major, rb_minor, rb_teeny = ruby_version.split("-", 2).first.split(".", 3)
+  "#{rb_major}.#{rb_minor}.0" # gem path's teeny version is always 0
+end
+
+def gemfile_dir
+  "."
+end
+
+def template_params(params = nil)
+  config = {
+    project_name: PACKAGE_NAME,
+    version: PACKAGE_VERSION,
+    install_message: nil,
+    pkg_type: nil,
+  }
+
+  unless windows?
+    path_params = {
+      install_path: install_prefix,
+      gem_install_path: File.join(install_prefix, gem_dir_suffix),
+    }
+    config.merge!(path_params)
+  end
+
+  if params
+    config.merge(params)
+  else
+    config
+  end
+end
+
+def template_path(*path_parts)
+  File.join('templates', *path_parts)
+end
+
+def render_template(dest, src, config, opts={})
+  erb_binding = binding
+  config.each do |key, value|
+    erb_binding.local_variable_set(key, value)
+  end
+
+  destination = dest.gsub('td-agent', config[:project_name])
+  directory = File.dirname(destination)
+  mode = opts.fetch(:mode, 0644)
+
+  logger = opts[:logger] || Logger.new(STDOUT, level: Logger::Severity::INFO)
+  logger.info("Generate #{destination}")
+  ensure_directory(directory)
+  File.open(destination, 'w', mode) do |f|
+    template = ERB.new(File.read(src), nil, '<>')
+    f.write(template.result(erb_binding))
+  end
+end
+
+class DownloadTask
+  include Rake::DSL
+
+  attr_reader :file_jemalloc_source
+  attr_reader :file_ruby_source, :file_ruby_installer_x64
+  attr_reader :file_fluentd_archive
+  attr_reader :files_ruby_gems
+  attr_reader :file_openssl_source
+
+  def initialize(logger:)
+    @logger = logger || Logger.new(STDOUT, level: Logger::Severity::INFO)
+  end
+
+  def files
+    [
+      @file_jemalloc_source,
+      @file_openssl_source,
+      @file_ruby_source,
+      @file_ruby_installer_x64,
+      @file_fluentd_archive,
+      *@files_ruby_gems
+    ]
+  end
+
+  def define
+    define_jemalloc_file
+    define_ruby_files
+    define_fluentd_archive
+    define_gem_files
+    define_openssl_file
+
+    namespace :download do
+      desc "Download jemalloc source"
+      task :jemalloc => [@file_jemalloc_source]
+
+      desc "Download Ruby source"
+      task :ruby => [@file_ruby_source, @file_ruby_installer_x64]
+
+      desc "Clone fluentd repository and create a tarball"
+      task :fluentd => @file_fluentd_archive
+
+      desc "Download ruby gems"
+      task :ruby_gems => @files_ruby_gems
+
+      desc "Download openssl source"
+      task :openssl => @file_openssl_source
+    end
+  end
+
+  private
+
+  def download_file(url, filename, sha256sum = nil)
+    tmp_filename = "#{filename}.part"
+
+    ensure_directory(DOWNLOADS_DIR) do
+      @logger.info("Downloading #{filename}...")
+      URI.open(url) do |in_file|
+        File.open(tmp_filename, "wb") do |out_file|
+          out_file.write(in_file.read)
+        end
+      end
+
+      unless sha256sum.nil?
+        digest = Digest::SHA256.file(tmp_filename)
+        if digest != sha256sum
+          fail "
+          sha256sum of #{filename} did not matched!!!
+            expected: #{sha256sum}
+            actual:   #{digest}
+          "
+        end
+      end
+
+      mv(tmp_filename, filename)
+    end
+  end
+
+  def define_jemalloc_file
+    version = JEMALLOC_VERSION
+    filename = "jemalloc-#{version}.tar.bz2"
+    url_base = "https://github.com/jemalloc/jemalloc/releases/download/"
+    @file_jemalloc_source = File.join(DOWNLOADS_DIR, filename)
+    file @file_jemalloc_source do
+      url = "#{url_base}/#{version}/#{filename}"
+      download_file(url, filename)
+    end
+  end
+
+  def define_openssl_file
+    version = OPENSSL_VERSION
+    filename = "openssl-#{version}.tar.gz"
+    url_base = "https://www.openssl.org/source/"
+    @file_openssl_source = File.join(DOWNLOADS_DIR, filename)
+    file @file_openssl_source do
+      url = "#{url_base}/#{filename}"
+      download_file(url, filename)
+    end
+  end
+
+  def define_ruby_files
+    define_ruby_source_file
+    define_ruby_installer_file
+  end
+
+  def define_ruby_source_file
+    version = BUNDLED_RUBY_VERSION
+    sha256sum = BUNDLED_RUBY_SOURCE_SHA256SUM
+    filename = "ruby-#{version}.tar.gz"
+    feature_version = version.match(/^(\d+\.\d+)/)[0]
+    url_base = "https://cache.ruby-lang.org/pub/ruby/"
+    url = "#{url_base}#{feature_version}/#{filename}"
+
+    @file_ruby_source = File.join(DOWNLOADS_DIR, filename)
+
+    file @file_ruby_source do
+      download_file(url, filename, sha256sum)
+    end
+  end
+
+  def define_ruby_installer_file
+    version = BUNDLED_RUBY_INSTALLER_X64_VERSION
+    sha256sum = BUNDLED_RUBY_INSTALLER_X64_SHA256SUM
+    filename = "rubyinstaller-#{version}-x64.7z"
+    url_base = "https://github.com/oneclick/rubyinstaller2/releases/download/"
+    url = "#{url_base}RubyInstaller-#{version}/#{filename}"
+
+    @file_ruby_installer_x64 = File.join(DOWNLOADS_DIR, filename)
+
+    file @file_ruby_installer_x64 do
+      download_file(url, filename, sha256sum)
+    end
+  end
+
+  def define_fluentd_archive
+    @file_fluentd_archive = File.join(DOWNLOADS_DIR, "fluentd-#{FLUENTD_REVISION}.tar.gz")
+    file @file_fluentd_archive do
+      ensure_directory(DOWNLOADS_DIR) do
+        dirname = "fluentd-#{FLUENTD_REVISION}"
+        rm_rf("fluentd") if File.exists?("fluentd")
+        rm_rf(dirname) if File.exists?(dirname)
+        sh("git", "clone", "https://github.com/fluent/fluentd.git")
+        cd("fluentd") do
+          sh("git", "checkout", FLUENTD_REVISION)
+        end
+        mv("fluentd", dirname)
+        sh("tar", "cvfz", "#{dirname}.tar.gz", dirname)
+      end
+    end
+  end
+
+  def define_gem_files
+    paths = []
+    Dir.glob("#{DOWNLOADS_DIR}/*.gem") do |path|
+      paths << path
+    end
+
+    instance_variable_set("@files_ruby_gems", paths)
+  end
+end
+
+class UpdateLockfileTask
+  include Rake::DSL
+
+  def define
+    namespace :lockfile do
+      desc "Update lockfile"
+      task :update do
+        cd gemfile_dir do
+          command = "bundle package --no-install --cache-path=#{DOWNLOADS_DIR}"
+          output, error, status = Open3.capture3(command)
+          unless status.success?
+            fail "Failed to update Gemfile.lock: <#{command}> (stdout: #{output}, stderr: #{error})"
+          end
+        end
+      end
+    end
+  end
+end
+
+class BuildTask
+  include Rake::DSL
+
+
+  def initialize(task:, logger:)
+    @download_task = task
+    @logger = logger || Logger.new(STDOUT, level: Logger::Severity::INFO)
+  end
+
+  def make_wix_version_number(version)
+    return version unless version.include?("~")
+    revision = ""
+    case version
+    when /~rc(\d+)/
+      revision = $1.to_i * 10000 + Time.now.hour
+    when /~beta(\d+)/
+      revision = $1.to_i * 1000 + Time.now.hour
+    when /~alpha(\d+)/
+      revision = $1.to_i * 100 + Time.now.hour
+    else
+      fail "Invalid version: #{version}"
+    end
+    if revision > 65534
+      fail "revision must be an integer, from 0 to 65534: <#{revision}>"
+    end
+    "%s.%s" % [
+      version.split("~", 2)[0].delete(".").to_i.pred.to_s.chars.join("."),
+      revision
+    ]
+  end
+
+  def define
+    namespace :build do
+      desc "Install jemalloc"
+      task :jemalloc => [:"download:jemalloc"] do
+        build_jemalloc unless windows?
+      end
+
+      desc "Install OpenSSL"
+      task :openssl => [:"download:openssl"] do
+        if macos?
+          build_openssl
+          create_certs
+        end
+      end
+
+      desc "Install Ruby"
+      task :ruby => [:jemalloc, :openssl, :"download:ruby"] do
+        if windows?
+          extract_ruby_installer
+          apply_ruby_installer_patches
+          setup_windows_build_env
+          find_and_put_dynamiclibs
+        else
+          build_ruby_from_source
+        end
+      end
+
+      desc "Install ruby gems"
+      task :ruby_gems => [:"download:ruby_gems", :fluentd] do
+        gem_install("bundler", BUNDLER_VERSION)
+
+        gem_home = ENV["GEM_HOME"]
+        ENV["GEM_HOME"] = gem_staging_dir
+        ENV["INSTALL_GEM_FROM_LOCAL_REPO"] = "yes"
+        sh(bundle_command, "_#{BUNDLER_VERSION}_", "install")
+        # Ensure to install binstubs under /opt/td-agent/bin
+        sh(gem_command, "pristine", "--only-executables", "--all", "--bindir", staging_bindir)
+        ENV["GEM_HOME"] = gem_home
+
+        # for fat gems which depend on nonexistent libraries
+        # mainly for nokogiri 1.11 or later on CentOS 6
+        rebuild_gems
+      end
+
+      desc "Install fluentd"
+      task :fluentd => [:"download:fluentd", :ruby] do
+        cd(DOWNLOADS_DIR) do
+          archive_path = @download_task.file_fluentd_archive
+          fluentd_dir = archive_path.sub(/\.tar\.gz$/, '')
+          sh("tar", "xvf", archive_path) unless File.exists?(fluentd_dir)
+          cd("fluentd-#{FLUENTD_REVISION}") do
+            sh("rake", "build")
+            setup_local_gem_repo
+            install_gemfiles
+          end
+        end
+      end
+
+      desc "Install all gems"
+      task :gems => [:ruby_gems]
+
+      desc "Collect licenses of bundled softwares"
+      task :licenses => [:gems] do
+        install_jemalloc_license
+        install_ruby_license
+        install_td_agent_license
+        collect_gem_licenses
+      end
+
+      desc "Install all components"
+      task :all => [:licenses] do
+        remove_needless_files
+      end
+
+      debian_pkg_scripts = ["preinst", "postinst", "postrm"]
+      debian_pkg_scripts.each do |script|
+        CLEAN.include(File.join("..", "debian", script))
+      end
+
+      desc "Create debian package script files from template"
+      task :deb_scripts do
+        # Note: "debian" directory in this directory isn't used dilectly, it's
+        # copied to the top directory of fluent-package-builder in Docker container.
+        # Since this task is executed in the container, package scripts should
+        # be generated to the "debian" directory under the top directory
+        # instead of this directory's one.
+        debian_pkg_scripts.each do |script|
+          src = template_path('package-scripts', 'td-agent', "deb", script)
+          next unless File.exist?(src)
+          dest = File.join("..", "debian", File.basename(script))
+          render_template(dest, src, template_params, { mode: 0755 })
+        end
+      end
+
+      desc "Create td-agent configuration files from template"
+      task :td_agent_config do
+        configs = [
+          "etc/td-agent/td-agent.conf"
+        ]
+        configs.concat([
+          "etc/logrotate.d/td-agent",
+          "opt/td-agent/share/td-agent-ruby.conf",
+          "opt/td-agent/share/td-agent.conf.tmpl"
+        ]) unless windows? || macos?
+        configs.each do |config|
+          src = template_path(config)
+          if config == "etc/td-agent/td-agent.conf"
+            src = template_path("opt/td-agent/share/td-agent.conf.tmpl")
+          end
+          dest = File.join(STAGING_DIR, config)
+          render_template(dest, src, template_params)
+        end
+      end
+
+      desc "Create systemd-tmpfiles configuration files from template"
+      task :systemd_tmpfiles_config do
+        configs = [
+          "usr/lib/tmpfiles.d/td-agent.conf",
+        ]
+        configs.each do |config|
+          src = template_path(config)
+          dest = File.join(STAGING_DIR, config)
+          render_template(dest, src, template_params)
+        end
+      end
+
+      desc "Create bin script files from template"
+      task :bin_scripts do
+        scripts = [
+          "usr/bin/td",
+          "usr/sbin/td-agent",
+          "usr/sbin/td-agent-gem",
+        ]
+        scripts.each do |script|
+          src = template_path("#{script}.erb")
+          dest = if macos?
+                   File.join(STAGING_DIR, File.join("opt", PACKAGE_NAME, script))
+                 else
+                   File.join(STAGING_DIR, script)
+                 end
+          render_template(dest, src, template_params, { mode: 0755 })
+        end
+      end
+
+      desc "Create launchctl configuration files from template"
+      task :launchctl_config do
+        configs = [
+          "td-agent.plist",
+        ]
+        configs.each do |config|
+          src = template_path("#{config}.erb")
+          dest = File.join(STAGING_DIR, File.join("Library", "LaunchDaemons", config))
+          render_template(dest, src, template_params)
+        end
+      end
+
+      desc "Install additional .bat files for Windows"
+      task :win_batch_files do
+        ensure_directory(staging_bindir)
+        cp("msi/assets/td-agent-prompt.bat", td_agent_staging_dir)
+        cp("msi/assets/td-agent-post-install.bat", staging_bindir)
+        cp("msi/assets/td-agent.bat", staging_bindir)
+        cp("msi/assets/td-agent-gem.bat", staging_bindir)
+        cp("msi/assets/td-agent-version.rb", staging_bindir)
+      end
+
+      desc "Create systemd unit file for Red Hat like systems"
+      task :rpm_systemd do
+        dest =  File.join(STAGING_DIR, 'usr', 'lib', 'systemd', 'system', PACKAGE_NAME + ".service")
+        params = {pkg_type: "rpm"}
+        render_systemd_unit_file(dest, template_params(params))
+      end
+
+      desc "Create sysv init file for Red Hat like systems"
+      task :rpm_sysvinit do
+        dest =  File.join(STAGING_DIR, 'etc', 'init.d', PACKAGE_NAME)
+        params = {pkg_type: "rpm"}
+        render_sysv_init_file(dest, template_params(params))
+      end
+
+      desc "Create systemd unit file for Debian like systems"
+      task :deb_systemd do
+        dest = File.join(STAGING_DIR, 'lib', 'systemd', 'system', PACKAGE_NAME + ".service")
+        params = {pkg_type: "deb"}
+        render_systemd_unit_file(dest, template_params(params))
+      end
+
+      desc "Create config files for WiX Toolset"
+      task :wix_config do
+        src  = File.join('msi', 'parameters.wxi.erb')
+        dest = File.join('msi', 'parameters.wxi')
+        params = {wix_package_version: make_wix_version_number(PACKAGE_VERSION)}
+        render_template(dest, src, template_params(params))
+      end
+
+      desc "Create config file for macOS Installer"
+      task :pkgbuild_config do
+        src  = File.join('dmg', 'resources', 'pkg', 'Distribution.xml.erb')
+        dest = File.join('dmg', 'resources', 'pkg', 'Distribution.xml')
+        params = {pkg_version: PACKAGE_VERSION}
+        render_template(dest, src, template_params(params))
+      end
+
+      desc "Create pkg scripts for macOS Installer"
+      task :pkgbuild_scripts do
+        src  = File.join('dmg', 'resources', 'pkg', 'postinstall.erb')
+        dest = File.join('dmg', 'resources', 'pkg', 'scripts', 'postinstall')
+        params = {pkg_version: PACKAGE_VERSION}
+        render_template(dest, src, template_params, { mode: 0755 })
+      end
+
+      desc "Create configuration files for Red Hat like systems with systemd"
+      task :rpm_config => [:td_agent_config, :systemd_tmpfiles_config, :bin_scripts, :rpm_systemd]
+
+      desc "Create configuration files for Red Hat like systems without systemd"
+      task :rpm_old_config => [:td_agent_config, :bin_scripts, :rpm_sysvinit]
+
+      desc "Create configuration files for Debian like systems"
+      task :deb_config => [:td_agent_config, :systemd_tmpfiles_config, :bin_scripts, :deb_systemd, :deb_scripts]
+
+      desc "Create configuration files for Windows"
+      task :msi_config => [:td_agent_config, :wix_config, :win_batch_files]
+
+      desc "Create configuration files for macOS"
+      task :dmg_config => [:td_agent_config, :pkgbuild_scripts, :pkgbuild_config, :bin_scripts, :launchctl_config]
+    end
+  end
+
+  private
+
+  def render_systemd_unit_file(dest_path, config)
+    template_file_path = template_path('etc', 'systemd', 'td-agent.service.erb')
+    render_template(dest_path, template_file_path, config)
+  end
+
+  def render_sysv_init_file(dest_path, config)
+    template_file_path = template_path('etc', 'init.d', 'td-agent.erb')
+    render_template(dest_path, template_file_path, config, {mode: 0755})
+  end
+
+  def apply_ruby_patches
+    return if BUNDLED_RUBY_PATCHES.nil?
+    BUNDLED_RUBY_PATCHES.each do |patch|
+      patch_name, version_condition = patch
+      dependency = Gem::Dependency.new('', version_condition)
+      if dependency.match?('', BUNDLED_RUBY_VERSION)
+        patch_path = File.join(__dir__, "patches", patch_name)
+        sh("patch", "-p1", "--input=#{patch_path}")
+      end
+    end
+  end
+
+  def build_jemalloc
+    tarball = @download_task.file_jemalloc_source
+    source_dir = tarball.sub(/\.tar\.bz2$/, '')
+
+    sh("tar", "xvf", tarball, "-C", DOWNLOADS_DIR)
+
+    configure_opts = [
+      "--prefix=#{install_prefix}",
+    ]
+
+    if JEMALLOC_VERSION.split('.')[0].to_i >= 4
+      if ENV["TD_AGENT_STAGING_PATH"] and
+        (ENV["TD_AGENT_STAGING_PATH"].end_with?("el8.aarch64") or
+         ENV["TD_AGENT_STAGING_PATH"].end_with?("el7.aarch64"))
+        # NOTE: There is a case that PAGE_SIZE detection on
+        # CentOS 7 CentOS 8 with aarch64 AWS ARM instance.
+        # So, explicitly set PAGE_SIZE by with-lg-page 16 (2^16 = 65536)
+        configure_opts.concat(["--with-lg-page=16"])
+      end
+      if ENV["TD_AGENT_STAGING_PATH"] and
+        ENV["TD_AGENT_STAGING_PATH"].end_with?("el8.ppc64le")
+        # NOTE: There is a case that PAGE_SIZE detection on
+        # CentOS 8 with ppc64le.
+        # So, explicitly set PAGE_SIZE by with-lg-page 16 (2^16 = 65536)
+        configure_opts.concat(["--with-lg-page=16"])
+      end
+    end
+
+    cd(source_dir) do
+      sh("./configure", *configure_opts)
+      sh("make", "install", "-j#{Etc.nprocessors}", "DESTDIR=#{STAGING_DIR}")
+    end
+  end
+
+  def openssldir
+    File.join(staging_etcdir, "openssl")
+  end
+
+  def create_certs
+    keychains = [
+      "/System/Library/Keychains/SystemRootCertificates.keychain"
+    ]
+
+    cert_list, error, status = Open3.capture3("security find-certificate -a -p #{keychains.join(' ')}")
+    unless status.success?
+      fail "Failed to retrive certificates. (stdout: #{cert_list}, stderr: #{error})"
+    end
+    certs = cert_list.scan(
+      /-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----/m
+    )
+
+    valid_certificates = certs.select do |cert|
+      IO.popen("#{staging_bindir}/openssl x509 -inform pem -checkend 0 -noout > /dev/null", "w") do |ossl_io|
+        ossl_io.write(cert)
+        ossl_io.close_write
+      end
+
+      $?.success?
+    end
+
+    mkdir_p(openssldir)
+    # Install cert.pem into install_prefix/etc/openssl and staging/opt/td-agent/etc/openssl/cert.pem.
+    [File.join(openssldir, "cert.pem"), File.join(install_prefix, "etc", "openssl", "cert.pem")].each do |path|
+      File.open(path, 'w', 0644) do |f|
+        f.write(valid_certificates.join("\n") << "\n")
+      end
+    end
+  end
+
+  def build_openssl
+    tarball = @download_task.file_openssl_source
+    source_dir = tarball.sub(/\.tar\.gz$/, '')
+
+    sh("tar", "xvf", tarball, "-C", DOWNLOADS_DIR)
+
+    configure_opts = [
+      "--prefix=#{install_prefix}",
+      "--openssldir=#{File.join("etc", "openssl")}",
+      "no-unit-test",
+      "no-comp",
+      "no-idea",
+      "no-mdc2",
+      "no-rc5",
+      "no-ssl2",
+      "no-ssl3",
+      "no-ssl3-method",
+      "no-zlib",
+      "shared",
+    ]
+    arch_opts = [
+      "darwin64-x86_64-cc",
+    ]
+
+    cd(source_dir) do
+      # Currently, macOS only.
+      sh("perl", "./Configure", *(configure_opts + arch_opts))
+      sh("make", "depend")
+      sh("make")
+      # For building rdkafka gem. The built openssl library for built Ruby cannot use without install.
+      sh("make", "install")
+      sh("make", "install", "DESTDIR=#{STAGING_DIR}")
+    end
+  end
+
+  def build_ruby_from_source
+    tarball = @download_task.file_ruby_source
+    ruby_source_dir = tarball.sub(/\.tar\.gz$/, '')
+
+    sh("tar", "xvf", tarball, "-C", DOWNLOADS_DIR)
+
+    configure_opts = [
+      "--prefix=#{install_prefix}",
+      "--enable-shared",
+      "--disable-install-doc",
+      "--with-compress-debug-sections=no", # https://bugs.ruby-lang.org/issues/12934
+    ]
+    if macos?
+      configure_opts.push("--without-gmp")
+      configure_opts.push("--without-gdbm")
+      configure_opts.push("--without-tk")
+      configure_opts.push("-C")
+      configure_opts.push("--with-openssl-dir=#{File.join(STAGING_DIR, install_prefix)}")
+    end
+    cd(ruby_source_dir) do
+      apply_ruby_patches
+      sh("./configure", *configure_opts)
+      sh("make", "install", "-j#{Etc.nprocessors}", "DESTDIR=#{STAGING_DIR}")
+
+      # For building gems. The built ruby & gem command cannot use without install.
+      sh("make", "install")
+    end
+  end
+
+  def extract_ruby_installer
+    ensure_directory(td_agent_staging_dir) do
+      path = File.expand_path(@download_task.file_ruby_installer_x64)
+      src_dir = File.basename(path).sub(/\.7z$/, '')
+      sh("7z",
+         "x",    # Extract files with full paths
+         "-y",   # Assume yes on all queries
+         path)
+      cp_r(Dir.glob(File.join(src_dir, "*")), ".")
+      rm_rf(src_dir)
+    end
+  end
+
+  def apply_ruby_installer_patches
+    return if BUNDLED_RUBY_INSTALLER_PATCHES.nil?
+
+    ruby_version = BUNDLED_RUBY_INSTALLER_X64_VERSION.sub(/-\d+$/, '')
+    feature_version = ruby_version.sub(/\d+$/, '0')
+    ruby_lib_dir = File.join(td_agent_staging_dir, "lib", "ruby", feature_version)
+
+    BUNDLED_RUBY_INSTALLER_PATCHES.each do |patch|
+      patch_name, version_condition = patch
+      dependency = Gem::Dependency.new('', version_condition)
+      if dependency.match?('', ruby_version)
+        patch_path = File.join(__dir__, "patches", patch_name)
+        cd(ruby_lib_dir) do
+          sh("ridk", "exec", "patch", "-p2", "--input=#{patch_path}")
+        end
+      end
+    end
+  end
+
+  def find_and_put_dynamiclibs
+    begin
+      require 'ruby_installer/runtime'
+
+      # These dlls are required to put in staging_bindir to run C++ based extension
+      # included gem such as winevt_c. We didn't find how to link them statically yet.
+      dlls = [
+        "libstdc++-6",
+      ]
+      dlls.each do |dll|
+        mingw_bin_path = RubyInstaller::Runtime.msys2_installation.mingw_bin_path
+        windows_path = "#{mingw_bin_path}/#{dll}.dll"
+        if File.exist?(windows_path)
+          copy windows_path, staging_bindir
+        else
+          raise "Cannot find required DLL needed for dynamic linking: #{windows_path}"
+        end
+      end
+    rescue LoadError
+      raise "Cannot load RubyInstaller::Runtime class"
+    end
+  end
+
+  def setup_windows_build_env
+    sh("#{td_agent_staging_dir}/bin/ridk", "install", "3")
+  end
+
+  def install_prefix
+    "/opt/#{PACKAGE_NAME}"
+  end
+
+  def td_agent_staging_dir
+    # The staging directory on windows doesn't have install_prefix,
+    # it's added by the installer.
+    if windows?
+      STAGING_DIR
+    else
+      File.join(STAGING_DIR, install_prefix)
+    end
+  end
+
+  def staging_bindir
+    File.join(td_agent_staging_dir, "bin")
+  end
+
+  def staging_etcdir
+    File.join(td_agent_staging_dir, "etc")
+  end
+
+  def staging_sharedir
+    File.join(td_agent_staging_dir, "share")
+  end
+
+  def gem_command
+    if windows?
+      File.join(staging_bindir, "gem")
+    else
+      # On GNU/Linux we don't use gem command in staging path, use the one
+      # installed in the proper path instead since Ruby doesn't support
+      # running without install (although there are some solutions like rbenv).
+      "#{install_prefix}/bin/gem"
+    end
+  end
+
+  def bundle_command
+    File.join(staging_bindir, "bundle")
+  end
+
+  def gem_dir_version
+    if windows?
+      ruby_version = BUNDLED_RUBY_INSTALLER_X64_VERSION
+    else
+      ruby_version = BUNDLED_RUBY_VERSION
+    end
+    rb_major, rb_minor, rb_teeny = ruby_version.split("-", 2).first.split(".", 3)
+    "#{rb_major}.#{rb_minor}.0" # gem path's teeny version is always 0
+  end
+
+  def licenses_staging_dir
+    File.join(td_agent_staging_dir, "LICENSES")
+  end
+
+  def gem_staging_dir
+    gemdir = `#{gem_command} env gemdir`.strip
+    fail "Failed to get default installation directory for gems!" unless $?.success?
+
+    if windows?
+      expected    = File.join(td_agent_staging_dir, gem_dir_suffix)
+      staging_dir = expected
+    else
+      expected    = File.join(install_prefix,       gem_dir_suffix)
+      staging_dir = File.join(td_agent_staging_dir, gem_dir_suffix)
+    end
+    fail "Unsupposed gemdir: #{gemdir} (expected: #{expected})" unless gemdir == expected
+
+    staging_dir
+  end
+
+  def gem_install(gem_path, version = nil, platform: nil)
+    ensure_directory(staging_bindir)
+    ensure_directory(gem_staging_dir)
+
+    gem_home = ENV["GEM_HOME"]
+    ENV["GEM_HOME"] = gem_staging_dir
+
+    gem_installation_command = [
+      gem_command, "install",
+      "--no-document",
+      "--bindir", staging_bindir,
+      gem_path
+    ]
+    if version
+      gem_installation_command << "--version"
+      gem_installation_command << version
+    end
+    if platform
+      gem_installation_command << "--platform"
+      gem_installation_command << platform
+    end
+    if macos? && gem_path.include?("rdkafka")
+      ENV["CPPFLAGS"] = "-I#{File.join(STAGING_DIR, install_prefix, 'include')}"
+      ENV["LDFLAGS"] = "-L#{File.join(STAGING_DIR, install_prefix, 'lib')}"
+    end
+    # digest-crc gem causes rake executable conflict due to rake runtime dependency
+    # and bundled rake gem on Ruby Installer.
+    if windows? && gem_path.include?("rake")
+      gem_installation_command.push("--force")
+    end
+    @logger.info("install: <#{gem_path}>")
+    sh(*gem_installation_command)
+
+    ENV["GEM_HOME"] = gem_home
+  end
+
+  def gem_uninstall(gem, version = nil)
+    ensure_directory(staging_bindir)
+    ensure_directory(gem_staging_dir)
+
+    gem_home = ENV["GEM_HOME"]
+    ENV["GEM_HOME"] = gem_staging_dir
+
+    gem_uninstallation_command = [
+      gem_command, "uninstall",
+      "--bindir", staging_bindir,
+      "--silent",
+      gem
+    ]
+    if version
+      gem_uninstallation_command << "--version"
+      gem_uninstallation_command << version
+    else
+      gem_uninstallation_command << "--all"
+    end
+    @logger.info("uninstall: <#{gem}>")
+    sh(*gem_uninstallation_command)
+
+    ENV["GEM_HOME"] = gem_home
+  end
+
+  def rebuild_gems
+    return unless ENV["REBUILD_GEMS"]
+
+    require 'bundler'
+    ENV["REBUILD_GEMS"].split((/\s+/)).each do |gem_name|
+      d = Bundler::Definition.build('Gemfile', 'Gemfile.lock', false)
+      version = d.locked_deps[gem_name].requirement.requirements[0][1].version
+      gem_uninstall(gem_name)
+      gem_install(gem_name, version, platform: "ruby")
+    end
+  end
+
+  def install_jemalloc_license
+    return if windows?
+    ensure_directory(licenses_staging_dir) do
+      tarball = @download_task.file_jemalloc_source
+      source_dir = File.basename(tarball.sub(/\.tar\.bz2$/, ''))
+      license_file = File.join(source_dir, "COPYING")
+      sh("tar", "xf", tarball, license_file)
+      mv(license_file, "LICENSE-jemalloc.txt")
+      rm_rf(source_dir)
+    end
+  end
+
+  def install_ruby_license
+    ensure_directory(licenses_staging_dir) do
+      if windows?
+        src  = File.join(td_agent_staging_dir, "LICENSE.txt")
+        mv(src, "LICENSE-RubyInstaller.txt")
+      end
+      tarball = @download_task.file_ruby_source
+      ruby_source_dir = File.basename(tarball.sub(/\.tar\.gz$/, ''))
+      license_file = File.join(ruby_source_dir, "COPYING")
+      sh("tar", "xf", tarball, license_file)
+      mv(license_file, "LICENSE-Ruby.txt")
+      rm_rf(ruby_source_dir)
+    end
+  end
+
+  def install_td_agent_license
+    ensure_directory(licenses_staging_dir)
+    src = File.join(__dir__, "..", "LICENSE")
+    dest = File.join(licenses_staging_dir, "LICENSE-td-agent.txt")
+    cp(src, dest)
+  end
+
+  def install_gemfiles
+    ensure_directory(staging_sharedir) do
+      ["Gemfile", "Gemfile.lock", "config.rb"].each do |file|
+        source_dir = File.join(__dir__, "..")
+        src = File.join(source_dir, "td-agent/#{file}")
+        dest = File.join(staging_sharedir, file)
+        cp(src, dest)
+      end
+    end
+  end
+
+  def setup_local_gem_repo
+    local_repo_dir = FLUENTD_LOCAL_GEM_REPO.sub("file://", "")
+    local_gems_dir = File.join(local_repo_dir, "gems")
+    FileUtils.mkdir_p(local_gems_dir)
+    Find.find("pkg") do |entry|
+      next unless entry.end_with?(".gem")
+      FileUtils.cp(entry, local_gems_dir)
+    end
+    cd(local_repo_dir) do
+      sh("gem", "install", "builder")
+      sh("gem", "generate_index")
+    end
+  end
+
+  def collect_gem_licenses
+    @logger.info("Collecting licenses of gems...")
+
+    env_restore = ENV["GEM_PATH"]
+    ENV["GEM_PATH"] = gem_staging_dir
+    command = "#{gem_command} list -d"
+    output, error, status = Open3.capture3(command)
+    unless status.success?
+      fail "Failed to get gem list: <#{command}> (stdout: #{output}, stderr: #{error})"
+    end
+    gems_descriptions = output
+    gems_descriptions.gsub!(STAGING_DIR, "") unless windows?
+    ENV["GEM_PATH"] = env_restore
+
+    ensure_directory(licenses_staging_dir) do
+      File.open("LICENSES-gems.txt", 'w', 0644) do |f|
+        f.write(gems_descriptions)
+      end
+    end
+  end
+
+  def remove_files(pattern, recursive=false)
+    files = Dir.glob(pattern)
+    return if files.empty?
+    if recursive
+      rm_rf(files)
+    else
+      rm_f(files)
+    end
+  end
+
+  def remove_needless_files
+    remove_files("#{td_agent_staging_dir}/bin/jeprof", true) # jemalloc 4 or later
+    remove_files("#{td_agent_staging_dir}/bin/pprof", true) # jemalloc 3
+    remove_files("#{td_agent_staging_dir}/share/doc", true) # Contains only jemalloc.html
+    remove_files("#{td_agent_staging_dir}/share/ri", true)
+    cd("#{gem_staging_dir}/cache") do
+      remove_files("*.gem")
+      remove_files("bundler", true)
+    end
+    Dir.glob("#{gem_staging_dir}/gems/*").each do |gem_dir|
+      cd(gem_dir) do
+        rm_rf(["test", "spec"])
+        remove_files("**/gem.build_complete")
+        remove_files("ext/**/a.out")
+        remove_files("ext/**/*.{o,la,a}")
+        remove_files("ext/**/.libs", true)
+      end
+    end
+    Dir.glob("#{td_agent_staging_dir}/lib/lib*.a").each do |static_library|
+      unless static_library.end_with?(".dll.a")
+        rm_f(static_library)
+      end
+    end
+    Dir.glob("#{td_agent_staging_dir}/**/.git").each do |git_dir|
+      remove_files(git_dir, true)
+    end
+  end
+end
+
+class LinuxPackageTask < PackageTask
+  def initialize(download_task)
+    @download_task = download_task
+    super(PACKAGE_NAME, PACKAGE_VERSION, detect_release_time)
+    @archive_tar_name = "#{@package}-#{@version}.tar"
+    @archive_name = "#{@archive_tar_name}.gz"
+    CLEAN.include(@archive_name)
+  end
+
+  private
+
+  def define_archive_task
+    repo_files = `git ls-files --full-name`.split("\n").collect do |path|
+      File.join("..", path)
+    end
+
+    debian_copyright_file = File.join("td-agent", "debian", "copyright")
+    file debian_copyright_file do
+      build_copyright_file
+    end
+
+    debian_include_binaries_file = File.join("td-agent", "debian", "source", "include-binaries")
+    file debian_include_binaries_file do
+      build_include_binaries_file
+    end
+
+    # TODO: Probably debian related files should be built in the build container
+    file @archive_name => [*repo_files, *@download_task.files, debian_copyright_file, debian_include_binaries_file] do
+      build_archive
+    end
+  end
+
+  def build_copyright_file
+    # Note: maintain debian/copyright manually is inappropriate way because
+    # many gem is bundled with td-agent package.
+    # We use gem specification GEMFILE to solve this issue.
+    src = File.join("templates", "package-scripts", "td-agent", "deb", "copyright")
+    dest = File.join("debian", "copyright")
+    licenses = []
+    @download_task.files_ruby_gems.each do |gem_file|
+      command = "gem specification #{gem_file}"
+      output, error, status = Open3.capture3(command)
+      unless status.success?
+        fail "Failed to get gem specification: <#{gem_file}> (stdout: #{output}, stderr: #{error})"
+      end
+      spec = YAML.safe_load(output,
+                            permitted_classes: [
+                              Time,
+                              Symbol,
+                              Gem::Specification,
+                              Gem::Version,
+                              Gem::Dependency,
+                              Gem::Requirement])
+      relative_path = gem_file.sub(/#{Dir.pwd}\//, "")
+      unless spec.licenses.empty?
+        spdx_compatible_license = spec.licenses.first.sub(/Apache 2\.0/, "Apache-2.0")
+                                    .sub(/Apache License Version 2\.0/, "Apache-2.0")
+                                    .sub(/BSD 2-Clause/, "BSD-2-Clause")
+        license = <<-EOS
+Files: #{relative_path}
+Copyright: #{spec.authors.join(",")}
+License: #{spdx_compatible_license}
+EOS
+        licenses << license
+      else
+        # Note: remove this conditions when gem.licenses in gemspec was fixed in upstream
+        case spec.name
+        when "cool.io", "async-pool", "ltsv"
+          license = "MIT"
+
+        when "td", "webhdfs", "td-logger", "fluent-config-regexp-type"
+          license = "Apache-2.0"
+        end
+        licenses <<= <<-EOS
+Files: #{relative_path}
+Copyright: #{spec.authors.join(",")}
+License: #{license}
+EOS
+      end
+    end
+    params = {
+      bundled_gem_licenses: licenses.join("\n"),
+      bundled_ruby_version: BUNDLED_RUBY_VERSION
+    }
+    render_template(dest, src, template_params(params))
+  end
+
+  def build_include_binaries_file
+    # Note: maintain debian/source/include-binaries manually is inappropriate way
+    # because many gem files are bundled with td-agent package.
+    # We use gem specification GEMFILE to solve this issue.
+    paths = []
+    command = "bundle config set --local cache_path #{DOWNLOADS_DIR}"
+    output, error, status = Open3.capture3(command)
+    unless status.success?
+      fail "Failed to set cache_path: <#{command}> (stdout: #{output}, stderr: #{error})"
+    end
+    # Note: bundle package try to require sudo when path is not set
+    command = "bundle config set --local path vendor"
+    output, error, status = Open3.capture3(command)
+    unless status.success?
+      fail "Failed to set dummy path: <#{command}> (stdout: #{output}, stderr: #{error})"
+    end
+    Dir.chdir(gemfile_dir) do
+      command = "bundle package --no-install"
+      output, error, status = Open3.capture3(command)
+      unless status.success?
+        fail "Failed to download gem files: <#{command}> (stdout: #{output}, stderr: #{error})"
+      end
+    end
+    Dir.glob("#{DOWNLOADS_DIR}/*.gem") do |path|
+      paths << path.sub(Dir.pwd, "td-agent")
+    end
+    ensure_directory("debian/source") do
+      File.open("include-binaries", "w+") do |file|
+        file.puts(paths.sort.uniq.join("\n"))
+      end
+    end
+  end
+
+  def build_archive
+    cd("..") do
+      sh("git", "archive", "HEAD",
+         "--prefix", "#{@archive_base_name}/",
+         "--output", @full_archive_name)
+      sh("tar", "xvf", @full_archive_name)
+      @download_task.files.each do |path|
+        src_path = Pathname(path)
+        dest_path = Pathname(DOWNLOADS_DIR)
+        relative_path = src_path.relative_path_from(dest_path)
+        dest_downloads_dir = "#{@archive_base_name}/td-agent/downloads"
+        dest_dir = "#{dest_downloads_dir}/#{File.dirname(relative_path)}"
+        ensure_directory(dest_dir)
+        # TODO: When a tarball is create on a host OS that is different from a target,
+        # mismatched fat gems are included unexpectedly. To avoid it, remove gems from
+        # the archive and let the build container to download them.
+        # Although we should remove dependency to gems, they are still required to
+        # build debian/copyright. Probably it should be built in the build container.
+        cp_r(path, dest_dir) unless path.end_with?(".gem")
+      end
+      cp_r("td-agent/debian/copyright", "#{@archive_base_name}/td-agent/debian/copyright")
+      sh("tar", "cvfz", @full_archive_name, @archive_base_name)
+      rm_rf(@archive_base_name)
+    end
+  end
+
+  def apt_targets_default
+    [
+      "debian-buster",
+      "ubuntu-xenial",
+      "ubuntu-bionic",
+      "ubuntu-focal",
+    ]
+  end
+
+  def yum_targets_default
+    [
+      "centos-7",
+      "centos-8",
+      "amazonlinux-2",
+    ]
+  end
+
+  private
+  def detect_release_time
+    release_time_env = ENV["TD_AGENT_RELEASE_TIME"]
+    if release_time_env
+      Time.parse(release_time_env).utc
+    else
+      Time.now.utc
+    end
+  end
+end
+
+class CompressDMG
+  include Rake::DSL
+
+  def initialize(version:, window_bounds:, pkg_position:, logger:)
+    @version = version
+    @window_bounds = window_bounds
+    @pkg_position = pkg_position
+    @dmg_temp_name = "rw.td-agent-#{@version}.dmg"
+    @dmg_name = "td-agent-#{@version}.dmg"
+    @pkg_name = "td-agent-#{@version}.pkg"
+    @volume_name = "Td-Agent"
+    @device = nil
+    @osascript_path = File.join("resources", "dmg", "td-agent.osascript")
+    @logger = logger || Logger.new(STDOUT, level: Logger::Severity::INFO)
+  end
+
+  def clean_dmgs
+    rm_f(@dmg_name)
+    rm_f(@dmg_temp_name)
+  end
+
+  def clean_disks
+    disks, error, status = Open3.capture3("mount | grep \"/Volumes/#{@volume_name}\" | awk '{print $1}'")
+    unless status.success?
+      fail "Failed to search mounted disks (stdout: #{disks}, stderr: #{error})"
+    end
+    disks.split("\n").each do |disk|
+      disk.chomp!
+
+      sh("hdiutil", "detach", disk)
+    end
+  end
+
+  def create_rw_dmg
+    sh("hdiutil",
+       "create", "-ov",
+       "-srcfolder", "dmg",
+       "-format", "UDRW",
+       "-volname", @volume_name,
+       @dmg_temp_name)
+  end
+
+  def get_attached_rw_dmg
+    device, error, status = Open3.capture3("hdiutil attach -readwrite -noverify -noautoopen #{@dmg_temp_name} | egrep '^/dev/' | sed 1q | awk '{print $1}'")
+    @device = device.strip
+    unless status.success?
+      fail "Failed to attach disk image. (stdout: #{device}, stderr: #{error})"
+    end
+    sleep 5
+  end
+
+  def create_osascript
+    apple_script = <<EOL
+set found_disk to do shell script "ls /Volumes/ | grep '#{@volume_name}*'"
+
+if found_disk is {} then
+  set errormsg to "Disk " & found_disk & " not found"
+  error errormsg
+end if
+
+tell application "Finder"
+  reopen
+  activate
+  set selection to {}
+  set target of Finder window 1 to found_disk
+  set current view of Finder window 1 to icon view
+  set toolbar visible of Finder window 1 to false
+  set statusbar visible of Finder window 1 to false
+  set the bounds of Finder window 1 to {#{@window_bounds}}
+  tell disk found_disk
+     set theViewOptions to the icon view options of container window
+     set background picture of theViewOptions to file ".background:background.png"
+     set arrangement of theViewOptions to not arranged
+     set icon size of theViewOptions to 72
+     set position of item "#{@pkg_name}" of container window to {#{@pkg_position}}
+     delay 5
+  end tell
+end tell
+EOL
+    @logger.info("Generate #{@osascript_path}")
+    File.open(@osascript_path, 'w', 0644) do |f|
+      f.write(apple_script)
+    end
+  end
+
+  def set_volume_icon
+    icon = File.join("resources", "dmg", "icon.png")
+    mkdir_p("td-agent.iconset")
+
+    sh("sips", "-z", "16", "16", "#{icon}", "--out", "td-agent.iconset/icon_16x16.png")
+    sh("sips", "-z", "32", "32", "#{icon}", "--out", "td-agent.iconset/icon_16x16@2x.png")
+    sh("sips", "-z", "32", "32", "#{icon}", "--out", "td-agent.iconset/icon_32x32.png")
+    sh("sips", "-z", "64", "64", "#{icon}", "--out", "td-agent.iconset/icon_32x32@2x.png")
+    sh("sips", "-z", "128", "128", "#{icon}", "--out", "td-agent.iconset/icon_128x128.png")
+    sh("sips", "-z", "256", "256", "#{icon}", "--out", "td-agent.iconset/icon_128x128@2x.png")
+    sh("sips", "-z", "256", "256", "#{icon}", "--out", "td-agent.iconset/icon_256x256.png")
+    sh("sips", "-z", "512", "512", "#{icon}", "--out", "td-agent.iconset/icon_256x256@2x.png")
+    sh("sips", "-z", "512", "512", "#{icon}", "--out", "td-agent.iconset/icon_512x512.png")
+    sh("sips", "-z", "1024", "1024", "#{icon}", "--out", "td-agent.iconset/icon_512x512@2x.png")
+    sh("iconutil", "-c", "icns", "td-agent.iconset")
+
+    cp("td-agent.icns", "/Volumes/#{@volume_name}/.VolumeIcon.icns")
+
+    sh("SetFile", "-c", "icnC", "/Volumes/#{@volume_name}/.VolumeIcon.icns")
+    sh("SetFile", "-a", "C", "/Volumes/#{@volume_name}")
+  end
+
+  def prettify_dmg
+    bg_folder = "/Volumes/#{@volume_name}/.background"
+    mkdir_p(bg_folder)
+    cp(File.join("resources", "dmg", "background.png"), bg_folder)
+
+    sh("osascript", @osascript_path)
+  end
+
+  def compress_dmg
+    sh("chmod", "-Rf", "go-w", "/Volumes/#{@volume_name}")
+    sh("sync")
+    sh("sync")
+    sh("hdiutil", "detach", @device)
+    sh("hdiutil",
+       "convert", @dmg_temp_name,
+       "-format", "UDZO",
+       "-imagekey", "zlib-level=9",
+       "-o", @dmg_name)
+  end
+
+  def set_dmg_icon
+    sh("sips", "-i", File.join("resources", "dmg", "icon.png"))
+    sh("DeRez -only icns #{File.join('resources', 'dmg', 'icon.png')} > td-agent.rsrc")
+    sh("Rez", "-append", "td-agent.rsrc", "-o", @dmg_name)
+    sh("SetFile", "-a", "C", @dmg_name)
+  end
+
+  def verify_dmg
+    sh("hdiutil", "verify", @dmg_name)
+  end
+
+  def remove_rw_dmg
+    rm_f(@dmg_temp_name)
+  end
+
+  def run
+    clean_disks
+    clean_dmgs
+    create_rw_dmg
+    get_attached_rw_dmg
+    sleep 5
+    set_volume_icon
+    create_osascript
+    prettify_dmg
+    compress_dmg
+    set_dmg_icon
+    verify_dmg
+    remove_rw_dmg
+  end
+end
+
+class MacOSPackageTask
+  include Rake::DSL
+
+  PKG_OUTPUT_DIR = ENV["TD_AGENT_PKG_OUTPUT_PATH"] || "."
+
+  def initialize(logger:)
+    @package = PACKAGE_NAME
+    @version = PACKAGE_VERSION
+    @staging_dir = STAGING_DIR
+    @logger = logger || Logger.new(STDOUT, level: Logger::Severity::INFO)
+  end
+
+  def define
+    namespace :dmg do
+      desc "Build macOS package"
+      task :selfbuild => [:"build:dmg_config", :"build:all"] do
+        run_pkgbuild
+      end
+    end
+  end
+
+  def run_pkgbuild
+    output_dir = PKG_OUTPUT_DIR
+    ensure_directory(output_dir)
+
+    cd("dmg") do
+      # Build flat pkg installer
+      sh("pkgbuild",
+         "--root", STAGING_DIR,
+         "--component-plist", File.join("resources", "pkg", "td-agent.plist"),
+         "--identifier", "com.treasuredata.tdagent",
+         "--version", @version,
+         "--scripts", File.join("resources", "pkg", "scripts"),
+         "--install-location", "/",
+         File.join(output_dir, "td-agent.pkg"))
+
+      # Build distributable pkg installer
+      sh("productbuild",
+         "--distribution", File.join("resources", "pkg", "Distribution.xml"),
+         "--package-path", File.join(output_dir, "td-agent.pkg"),
+         "--resources", File.join("resources", "pkg", "assets"),
+         File.join(output_dir, "td-agent-#{@version}.pkg"))
+
+      mkdir_p("dmg")
+      cp(File.join(output_dir, "td-agent-#{@version}.pkg"), "dmg")
+      window_bounds = "100, 100, 750, 600"
+      pkg_position = "535, 50"
+      dmg = CompressDMG.new(version: @version, window_bounds: window_bounds, pkg_position: pkg_position, logger: @logger)
+      dmg.run
+    end
+  end
+end
+
+class WindowsPackageTask
+  include Rake::DSL
+
+  MSI_OUTPUT_DIR = ENV["TD_AGENT_MSI_OUTPUT_PATH"] || "."
+
+  def initialize
+    @package = PACKAGE_NAME
+    @version = PACKAGE_VERSION
+    @staging_dir = STAGING_DIR
+  end
+
+  def define
+    namespace :msi do
+      desc "Build MSI package (alias for msi:dockerbuild)"
+      task :build do
+        Rake::Task["msi:dockerbuild"].invoke
+      end
+
+      desc "Build MSI package without using Docker"
+      task :selfbuild => [:"build:msi_config", :"build:all"] do
+        run_build
+      end
+
+      desc "Build MSI package by Docker"
+      task :dockerbuild => ["#{PACKAGE_NAME}-#{PACKAGE_VERSION}.tar.gz"] do
+        run_docker("windows", arch)
+      end
+    end
+  end
+
+  private
+
+  def run_build
+    output_dir = MSI_OUTPUT_DIR.gsub(File::ALT_SEPARATOR, File::SEPARATOR)
+    ensure_directory(output_dir)
+
+    cd("msi") do
+      # Pick up package contents
+      sh(heat_path,
+         "dir", @staging_dir,
+         "-nologo", # Skip heat logo
+         "-srd",    # Suppress harvesting the root directory as an element
+         "-sreg",   # Suppress registry harvesting
+         "-gg",                          # Generate guides
+         "-cg", "ProjectDir",            # Component Group Name
+         "-dr", "PROJECTLOCATION",       # Root directory reference
+         "-var", "var.ProjectSourceDir", # Substitue File/@Source="SourceDir"
+         "-t",   "exclude-files.xslt",   # XSLT for exclude files
+         "-out", 'project-files.wxs')
+
+      # Build
+      sh(candle_path,
+         "-nologo",                            # Skip candle logo
+         "-dProjectSourceDir=#{@staging_dir}", # Define a parameter
+         "-arch", "#{arch}",
+         "project-files.wxs",
+         "source.wxs")
+
+      # Link
+      sh(light_path,
+         "-nologo",                        # Skip light logo
+         "-ext", "WixUIExtension",         # Extension assembly
+         "-ext", "WixUtilExtension",       # Enable QuietExec
+         "-cultures:en-us",                # Localization
+         "-loc", "localization-en-us.wxl", # Localization file
+         "project-files.wixobj",
+         "source.wixobj",
+         "-out", File.join(output_dir, "#{@package}-#{@version}-#{arch}.msi"))
+    end
+  end
+
+  def write_env
+    env_bat = "msi/env.bat"
+    File.open(env_bat, "w") do |file|
+      file.puts(<<-ENV)
+SET PACKAGE=#{@package}
+SET VERSION=#{@version}
+SET ARCH=#{arch}
+      ENV
+    end
+  end
+
+  # TODO: Unify with PackageTask
+  def run_docker(os, architecture=nil)
+    top_dir = File.expand_path('../.')
+    id = os
+    id = "#{id}-#{architecture}" if architecture
+    docker_tag = "#{@package}-#{id}"
+    build_command_line = [
+      "docker",
+      "build",
+      "--tag", docker_tag,
+    ]
+    run_command_line = [
+      "docker",
+      "run",
+      "--rm",
+      "--tty",
+      "--volume", "#{top_dir}:c:/fluent-package-builder:rw",
+    ]
+    docker_context = "msi"
+    build_command_line << docker_context
+    run_command_line.concat([docker_tag, 'c:\fluent-package-builder\td-agent\msi\build.bat'])
+
+    write_env
+
+    sh(*build_command_line)
+    sh(*run_command_line)
+  end
+
+  def windows_path(*pieces)
+    path = File.join(*pieces)
+    if File::ALT_SEPARATOR
+      path.gsub(File::SEPARATOR, File::ALT_SEPARATOR)
+    else
+      path
+    end
+  end
+
+  def wix_dir
+    dir = ENV["WIX"]
+    fail "Can't find WiX commands path" if dir.nil? || dir.empty?
+    dir
+  end
+
+  def wix_bin_dir
+    windows_path(wix_dir, "bin")
+  end
+
+  def heat_path
+    windows_path(wix_bin_dir, "heat")
+  end
+
+  def candle_path
+    windows_path(wix_bin_dir, "candle")
+  end
+
+  def light_path
+    windows_path(wix_bin_dir, "light")
+  end
+
+  def arch
+    if RUBY_PLATFORM =~ /x64/
+      "x64"
+    elsif RUBY_PLATFORM =~ /i386/
+      "x86"
+    else
+      fail "Unknown platform: #{RUBY_PLATFORM}"
+    end
+  end
+end
+
+download_task = DownloadTask.new(logger: @logger)
+download_task.define
+
+build_task = BuildTask.new(task: download_task, logger: @logger)
+build_task.define
+
+linux_package_task = LinuxPackageTask.new(download_task)
+linux_package_task.define
+
+windows_package_task = WindowsPackageTask.new
+windows_package_task.define
+
+update_lockfile_task = UpdateLockfileTask.new
+update_lockfile_task.define
+
+macos_package_task = MacOSPackageTask.new(logger: @logger)
+macos_package_task.define

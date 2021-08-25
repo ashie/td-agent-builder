@@ -1,0 +1,19 @@
+#!/usr/bin/make -f
+
+export GEM2DEB_TEST_RUNNER = --check-dependencies
+export DH_RUBY = --gem-install
+
+%:
+	dh $@
+
+override_dh_makeshlibs:
+	:
+
+override_dh_auto_install:
+	rake build:deb_config TD_AGENT_STAGING_PATH="$(CURDIR)/debian/tmp" NO_VAR_RUN=1
+	rake build:all        TD_AGENT_STAGING_PATH="$(CURDIR)/debian/tmp"
+	dh_installman
+
+override_dh_auto_clean:
+	rake clean
+	dh_auto_clean

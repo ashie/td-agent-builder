@@ -1,0 +1,15 @@
+#!<%= install_path %>/bin/ruby
+ENV["GEM_HOME"]="<%= gem_install_path %>/"
+ENV["GEM_PATH"]="<%= gem_install_path %>/"
+ENV["FLUENT_CONF"]="/etc/<%= project_name %>/<%= project_name %>.conf"
+ENV["FLUENT_PLUGIN"]="/etc/<%= project_name %>/plugin"
+ENV["FLUENT_SOCKET"]="/var/run/<%= project_name %>/<%= project_name %>.sock"
+if ARGV.include?("--version")
+  require "<%= install_path %>/share/config"
+  Dir.glob("<%= install_path %>/lib/ruby/**/gems/**/fluent/version.rb").each do |v|
+    require v.delete_suffix(".rb")
+  end
+  puts "td-agent #{PACKAGE_VERSION} fluentd #{Fluent::VERSION} (#{FLUENTD_REVISION})"
+  exit 0
+end
+load "<%= install_path %>/bin/fluentd"

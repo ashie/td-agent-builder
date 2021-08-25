@@ -1,0 +1,53 @@
+From 9edc162583a4f685332239f6249745ad9b518cbe Mon Sep 17 00:00:00 2001
+From: Kazuki Yamaguchi <k@rhe.jp>
+Date: Fri, 26 Mar 2021 18:16:07 +0900
+Subject: [PATCH] [ruby/resolv] Fix confusion of received response message
+
+This is a follow up for commit 33fb966197f1 ("Remove sender/message_id
+pair after response received in resolv", 2020-09-11).
+
+As the @senders instance variable is also used for tracking transaction
+ID allocation, simply removing an entry without releasing the ID would
+eventually deplete the ID space and cause
+Resolv::DNS.allocate_request_id to hang.
+
+It seems the intention of the code was to check that the received DNS
+message is actually the response for the question made within the method
+earlier. Let's have it actually do so.
+
+[Bug #12838] https://bugs.ruby-lang.org/issues/12838
+[Bug #17748] https://bugs.ruby-lang.org/issues/17748
+
+https://github.com/ruby/resolv/commit/53ca9c9209
+---
+ lib/resolv.rb | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/lib/resolv.rb b/lib/resolv.rb
+index 3ca0f01cfe..b69c7045ca 100644
+--- a/lib/resolv.rb
++++ b/lib/resolv.rb
+@@ -696,17 +696,17 @@ def request(sender, tout)
+           rescue DecodeError
+             next # broken DNS message ignored
+           end
+-          if s = sender_for(from, msg)
++          if sender == sender_for(from, msg)
+             break
+           else
+             # unexpected DNS message ignored
+           end
+         end
+-        return msg, s.data
++        return msg, sender.data
+       end
+ 
+       def sender_for(addr, msg)
+-        @senders.delete([addr,msg.id])
++        @senders[[addr,msg.id]]
+       end
+ 
+       def close
+-- 
+2.30.2
+
