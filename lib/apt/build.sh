@@ -81,7 +81,7 @@ if [ "${DEBUG:-no}" = "yes" ]; then
   fi
 else
   if [ "${LINTIAN:-yes}" = "yes" ]; then
-    run debuild -us -uc --lintian-opts --profile td-agent/${distribution} > /dev/null
+    run debuild -us -uc --lintian-opts --profile ${PACKAGE}/${distribution} > /dev/null
   else
     run debuild --no-lintian -us -uc > /dev/null
   fi

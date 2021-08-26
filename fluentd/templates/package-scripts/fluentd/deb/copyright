@@ -5,7 +5,7 @@ Files: *
 Copyright: 2019-2020 Treasure Data, Inc.
 License: Apache-2.0
 
-Files: td-agent/downloads/ruby-<%= bundled_ruby_version %>.tar.gz
+Files: fluentd/downloads/ruby-<%= bundled_ruby_version %>.tar.gz
 Copyright: Yukihiro Matsumoto <matz@netlab.jp> and others
 License: BSD-2-Clause or Ruby
 
@@ -27,9 +27,9 @@ License: Apache-2.0
  On Debian-based systems the full text of the Apache version 2.0 license
  can be found in /usr/share/common-licenses/Apache-2.0.
  .
- Note that td-agent package bundles many third-party software under
- /opt/td-agent/embedded not to affect already installed packages.
- See /opt/td-agent/LICENSE/* for embedded software.
+ Note that fluentd package bundles many third-party software under
+ /opt/fluentd not to affect already installed packages.
+ See /opt/fluentd/LICENSE/* for embedded software.
 
 License: BSD-2-Clause
  Redistribution and use in source and binary forms, with or without

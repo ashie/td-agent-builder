@@ -41,7 +41,13 @@ def define_bulked_task(name, description, packages = PACKAGES)
   task name.to_sym do
     packages.each do |package|
       cd(package) do
-        ruby("-S", "rake", name.to_s)
+        # e.g. apt:fluentd_build => apt:build
+        prefixed_target = name.split(':', 2).last
+        if prefixed_target.start_with?("fluentd_")
+          ruby("-S", "rake", name.sub(/:fluentd_/, ':').to_s)
+        else
+          ruby("-S", "rake", name.to_s)
+        end
       end
     end
   end

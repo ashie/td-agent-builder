@@ -1,4 +1,4 @@
-Source: td-agent
+Source: fluentd
 Section: net
 Priority: optional
 Maintainer: Fluentd developers <fluentd@googlegroups.com>
@@ -17,8 +17,11 @@ Build-Depends:
 Standards-Version: 4.3.0
 Homepage: https://www.fluentd.org/
 
-Package: td-agent
+Package: fluentd
 Architecture: any
+Replaces: td-agent (<< 4.2.0-1)
+Breaks: td-agent (<< 4.2.0-1)
+Conflicts: td-agent (<< 4.2.0-1)
 Pre-Depends: adduser
 Depends:
   ${misc:Depends},
