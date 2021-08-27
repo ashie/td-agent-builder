@@ -1,0 +1,142 @@
+# -*- ruby -*-
+
+require_relative "../lib/package-task"
+require 'rake/clean'
+require "time"
+
+# Debian
+CLEAN.include("apt/tmp")
+CLEAN.include("apt/build.sh")
+CLEAN.include("apt/env.sh")
+CLEAN.include("debian/tmp")
+CLOBBER.include("apt/repositories")
+
+class TdAgentAptSourcePackageTask < PackageTask
+  def initialize
+    super("td-agent-apt-source",
+          repository_version,
+          latest_commit_time(File.join(__dir__, "..")))
+    CLEAN.include(@archive_name)
+  end
+
+  def git_directory?(directory)
+    candidate_paths = [".git", "HEAD"]
+    candidate_paths.any? do |candidate_path|
+      File.exist?(File.join(directory, candidate_path))
+    end
+  end
+
+  def latest_commit_time(git_directory)
+    return nil unless git_directory?(git_directory)
+    Dir.chdir(git_directory) do
+      return Time.iso8601(`git log -n 1 --format=%aI`.chomp).utc
+    end
+  end
+
+  def repository_version
+    "2020.8.25"
+  end
+
+  def repository_name
+    "td-agent"
+  end
+
+  def repository_label
+    "Treasure Agent"
+  end
+
+  def repository_description
+    "Treasure Agent related packages"
+  end
+
+  def repository_url
+    "http://packages.treasuredata.com"
+  end
+
+  def repository_gpg_key_ids
+    ["BEE682289B2217F45AF4CC3F901F9177AB97ACBE"]
+  end
+
+  def define
+    super
+    define_apt_latest_task
+  end
+
+  private
+  def define_archive_task
+    debian_files = Dir.glob("debian/*")
+    file @archive_name => [*debian_files] do
+      rm_rf(@archive_base_name)
+      mkdir(@archive_base_name)
+      cp_r("debian", @archive_base_name)
+      repository_gpg_key_ids.each do |gpg_key_id|
+        unless system("gpg", "--list-keys", gpg_key_id, out: IO::NULL)
+          sh("gpg",
+             "--keyserver", "keyserver.ubuntu.com",
+             "--recv-key", gpg_key_id)
+        end
+      end
+      sh("gpg", "--armor", "--export", *repository_gpg_key_ids,
+         out: "#{@archive_base_name}/keys")
+      sh("tar", "czf", @archive_name, @archive_base_name)
+      rm_rf(@archive_base_name)
+    end
+  end
+
+  def apt_targets_default
+    [
+      "debian-buster",
+      "ubuntu-xenial",
+      "ubuntu-bionic",
+      "ubuntu-focal"
+    ]
+  end
+
+  def define_apt_latest_task
+    namespace :apt do
+      apt_targets.each do |target|
+        distribution, code_name = target.split("-", 2)
+        case distribution
+        when "ubuntu"
+          component = "universe"
+        else
+          component = "main"
+        end
+        deb = [
+          apt_dir,
+          "repositories",
+          distribution,
+          "pool",
+          code_name,
+          component,
+          @package[0],
+          @package,
+          "#{@package}_#{@version}-#{@deb_release}_all.deb",
+        ].join("/")
+        latest_deb = [
+          apt_dir,
+          "repositories",
+          distribution,
+          "#{@package}-latest-#{code_name}.deb",
+        ].join("/")
+        file latest_deb => deb do
+          cp(deb, latest_deb)
+        end
+        task :latest => latest_deb
+
+      end
+      task :release => :latest
+    end
+  end
+
+  def enable_ubuntu?
+    false
+  end
+
+  def enable_yum?
+    false
+  end
+end
+
+task = TdAgentAptSourcePackageTask.new
+task.define

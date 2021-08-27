@@ -1,0 +1,35 @@
+[Unit]
+Description=<%= project_name %>: Fluentd based data collector for Treasure Data
+Documentation=https://docs.treasuredata.com/display/public/PD/About+Treasure+Data%%27s+Server-Side+Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=<%= Shellwords.shellescape(project_name) %>
+Group=<%= Shellwords.shellescape(project_name) %>
+LimitNOFILE=65536
+Environment=LD_PRELOAD=<%= install_path %>/lib/libjemalloc.so
+Environment=GEM_HOME=<%= gem_install_path %>/
+Environment=GEM_PATH=<%= gem_install_path %>/
+Environment=FLUENT_CONF=/etc/<%= project_name %>/<%= project_name %>.conf
+Environment=FLUENT_PLUGIN=/etc/<%= project_name %>/plugin
+Environment=FLUENT_SOCKET=/var/run/<%= project_name %>/<%= project_name %>.sock
+Environment=TD_AGENT_LOG_FILE=/var/log/<%= project_name %>/<%= project_name %>.log
+Environment=TD_AGENT_OPTIONS=
+<% if pkg_type == 'deb' %>
+EnvironmentFile=-/etc/default/<%= project_name %>
+<% else %>
+EnvironmentFile=-/etc/sysconfig/<%= project_name %>
+<% end %>
+PIDFile=<%= Shellwords.shellescape("/var/run/#{project_name}/#{project_name}.pid") %>
+RuntimeDirectory=<%= Shellwords.shellescape(project_name) %>
+Type=forking
+# XXX: Fix fluentd executables path
+ExecStart=/opt/td-agent/bin/fluentd --log $TD_AGENT_LOG_FILE --daemon <%= Shellwords.shellescape("/var/run/#{project_name}/#{project_name}.pid") %> $TD_AGENT_OPTIONS
+ExecStop=/bin/kill -TERM ${MAINPID}
+ExecReload=/bin/kill -HUP ${MAINPID}
+Restart=always
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

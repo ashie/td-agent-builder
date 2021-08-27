@@ -1,0 +1,269 @@
+# -*- rpm -*-
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+%define _centos_ver %{?centos_ver:%{centos_ver}}%{!?centos_ver:8}
+%define _amazon_ver %{?amzn:%{amzn}}%{!?amzn:0}
+%define _suse_ver %{?suse_version:%{suse_version}}%{!?suse_version:0}
+%define use_suse (%{_suse_ver} >= 1315)
+%define use_scl_ruby (%{_centos_ver} <= 7 && %{_amazon_ver} == 0)
+%if %{_centos_ver} <= 6
+%define scl_ruby_ver 24
+%else
+%define scl_ruby_ver 26
+%endif
+%define use_systemd (%{_centos_ver} >= 7) || %{_suse_ver} >= 1315
+%define use_license (%{_centos_ver} >= 7)
+# Omit check-rpath and brp-mangle-shebangs since we use our own Ruby
+%define __arch_install_post %{nil}
+%undefine __brp_mangle_shebangs
+
+%if %{_centos_ver} < 7
+%filter_provides_in .*\.so
+%filter_from_provides /pkgconfig.*/d
+%filter_from_provides /perl.*/d
+%filter_requires_in libjemalloc.*
+%filter_requires_in libruby.*
+%filter_from_requires /\/opt\/td-agent\/bin\/ruby/d
+%filter_setup
+%else
+%global __provides_exclude_from ^/opt/%{name}/.*\\.so.*
+%global __requires_exclude libjemalloc.*|libruby.*|/opt/%{name}/.*
+%endif
+
+%if %{use_systemd}
+%define control_service() (systemctl %1 %2)
+%define disable_service() (systemctl %1 %2)
+%define enable_service() (systemctl %1 %2)
+%else
+%define control_service() (/sbin/service %2 %1)
+%define disable_service() (/sbin/chkconfig --del %2)
+%define enable_service() (/sbin/chkconfig --add %2)
+%endif
+
+Name:		@PACKAGE@
+Version:	@VERSION@
+Release:	@RELEASE@%{?dist}
+Summary:	The stable distribution of Fluentd
+
+License:	ASL 2.0
+URL:		https://www.treasuredata.com/
+Source0:	@PACKAGE@-@VERSION@.tar.gz
+
+%if %{use_scl_ruby}
+BuildRequires:	rh-ruby%{scl_ruby_ver}-ruby-devel
+BuildRequires:	rh-ruby%{scl_ruby_ver}-rubygems
+BuildRequires:	rh-ruby%{scl_ruby_ver}-rubygem-bundler
+%else
+%if %{_amazon_ver} > 0
+BuildRequires:	ruby
+BuildRequires:	rubygems
+BuildRequires:	rubygem-rake
+%else
+%if %{use_suse}
+BuildRequires:	ruby2.4
+BuildRequires:	ruby-devel
+BuildRequires:	ruby2.4-rubygem-bundler
+%else
+BuildRequires:	ruby-devel
+BuildRequires:	rubygems
+BuildRequires:	rubygem-bundler
+%endif
+%endif
+%endif
+BuildRequires:	gcc-c++
+BuildRequires:	git
+BuildRequires:	zlib-devel
+%if %{use_suse}
+BuildRequires:	libopenssl-devel
+BuildRequires:	pkg-config
+%else
+BuildRequires:	pkgconfig
+BuildRequires:	openssl-devel
+BuildRequires:	nss-softokn-freebl-devel
+%endif
+BuildRequires:	cyrus-sasl-devel
+BuildRequires:	libedit-devel
+BuildRequires:	ncurses-devel
+BuildRequires:	libyaml-devel
+%if %{use_systemd}
+%{?systemd_requires}
+BuildRequires: systemd
+%else
+# It's optional, see ../templates/etc/init.d/td-agent.erb
+#Requires: redhat-lsb-core
+%endif
+Requires(pre): /usr/bin/getent
+%if %{use_suse}
+Requires(pre): /usr/sbin/useradd
+%else
+Requires(pre): /usr/sbin/adduser
+%endif
+
+%description
+The stable distribution of Fluentd, called td-agent.
+
+%prep
+%setup -q -n @PACKAGE@-%{version}
+
+%build
+
+%install
+%if %{use_scl_ruby}
+. /opt/rh/rh-ruby%{scl_ruby_ver}/enable
+%endif
+%if %{use_systemd}
+rake build:rpm_config TD_AGENT_STAGING_PATH=%{buildroot} NO_VAR_RUN=1
+rake build:all TD_AGENT_STAGING_PATH=%{buildroot}
+%else
+rake build:rpm_old_config TD_AGENT_STAGING_PATH=%{buildroot} NO_VAR_RUN=0
+# Fat gem of nokogiri 1.11 requires glibc 2.17 which doesn't exist on CentOS 6
+rake build:all TD_AGENT_STAGING_PATH=%{buildroot} REBUILD_GEMS="nokogiri"
+%endif
+mkdir -p %{buildroot}%{_mandir}/man1
+cp @PACKAGE@/debian/*.1 %{buildroot}%{_mandir}/man1/
+for man in `find %{buildroot} -type f -wholename '*/man/man[1-9]/*.[1-9]'`; do
+    gzip ${man}
+done
+
+cd -
+mkdir -p %{buildroot}%{_localstatedir}/run/@PACKAGE@
+mkdir -p %{buildroot}%{_localstatedir}/log/@PACKAGE@
+mkdir -p %{buildroot}%{_localstatedir}/log/@PACKAGE@/buffer
+mkdir -p %{buildroot}%{_sysconfdir}/@PACKAGE@/plugin
+mkdir -p %{buildroot}/tmp/@PACKAGE@
+
+%pre
+if ! getent group @PACKAGE@ >/dev/null; then
+    /usr/sbin/groupadd -r @PACKAGE@
+fi
+if ! getent passwd @PACKAGE@ >/dev/null; then
+%if %{use_suse}
+    /usr/sbin/useradd -r -g @PACKAGE@ -d %{_localstatedir}/lib/@PACKAGE@ -s /sbin/nologin -c '@PACKAGE@' @PACKAGE@
+%else
+    /usr/sbin/adduser -r -g @PACKAGE@ -d %{_localstatedir}/lib/@PACKAGE@ -s /sbin/nologin -c '@PACKAGE@' @PACKAGE@
+%endif
+fi
+
+%preun
+if [ $1 -eq 0 ]; then
+  %{control_service stop @PACKAGE@}
+  %{disable_service disable @PACKAGE@}
+  %if ! %{?use_systemd}
+    for keep in /tmp/@PACKAGE@/.keep /var/run/@PACKAGE@/.keep; do
+      if [ -p $keep ]; then
+          rm -f $keep
+      fi
+    done
+  %endif
+fi
+
+%post
+if [ $1 -eq 1 ]; then
+  %{enable_service enable @PACKAGE@}
+fi
+if [ $1 -eq 2 ]; then
+  %{control_service condrestart @PACKAGE@}
+fi
+%if ! %{?use_systemd}
+  if [ $1 -eq 1 -o $1 -eq 2 ]; then
+    # On CentOS 6, tmpwatch cleanups under /tmp in 10d without
+    # create, access, modify operations. (See /etc/cron.daily/tmpwatch)
+    # To keep it, create special file under /tmp/td-agent.
+    for keep in /tmp/@PACKAGE@/.keep /var/run/@PACKAGE@/.keep; do
+      if [ ! -p $keep ]; then
+        mkfifo $keep
+      fi
+    done
+fi
+%endif
+if [ -d "%{_sysconfdir}/prelink.conf.d/" ]; then
+  echo "prelink detected. Installing /etc/prelink.conf.d/td-agent-ruby.conf ..."
+  if [ ! -f %{_sysconfdir}/prelink.conf.d/td-agent-ruby.conf ]; then
+      %{__cp} -f /opt/td-agent/share/td-agent-ruby.conf %{_sysconfdir}/prelink.conf.d/td-agent-ruby.conf
+  else
+    if [ $(grep '\-b /opt/td-agent/embedded/bin/ruby' -c %{_sysconfdir}/prelink.conf.d/td-agent-ruby.conf) -eq 1 ]; then
+      echo "old-prelink detected, Update /etc/prelink.conf ..."
+      %{__sed} -i"" %{_sysconfdir}/prelink.conf.d/td-agent-ruby.conf -e "s,/embedded/,/,"
+    fi
+  fi
+elif [ -f "%{_sysconfdir}/prelink.conf" ]; then
+  if [ $(grep '\-b /opt/td-agent/embedded/bin/ruby' -c %{_sysconfdir}/prelink.conf) -eq 1 ]; then
+    echo "old-prelink detected, but /etc/prelink.conf.d/ does't exist. Update /etc/prelink.conf ..."
+    %{__sed} -i"" %{_sysconfdir}/prelink.conf -e "s,/embedded/,/,"
+  elif [ $(grep '\-b /opt/td-agent/bin/ruby' -c %{_sysconfdir}/prelink.conf) -eq 0 ]; then
+    echo "prelink detected, but /etc/prelink.conf.d/ does't exist. Adding /etc/prelink.conf ..."
+    echo "-b /opt/td-agent/bin/ruby" >> /etc/prelink.conf
+  fi
+fi
+
+%files
+%doc README.md
+%if %{?use_license}
+%license LICENSE
+%else
+%doc LICENSE
+%endif
+%defattr(-,root,root,-)
+/opt/*
+/opt/@PACKAGE@/share/@PACKAGE@.conf.tmpl
+%if %{use_systemd}
+%{_unitdir}/@PACKAGE@.service
+%{_tmpfilesdir}/@PACKAGE@.conf
+%else
+%{_sysconfdir}/init.d/@PACKAGE@
+%endif
+%{_bindir}/td
+%{_sbindir}/td-agent
+%{_sbindir}/td-agent-gem
+%{_mandir}/man1/td*
+%config(noreplace) %{_sysconfdir}/@PACKAGE@/@PACKAGE@.conf
+%config(noreplace) %{_sysconfdir}/logrotate.d/@PACKAGE@
+%attr(0755,td-agent,td-agent) %dir %{_localstatedir}/log/@PACKAGE@
+%attr(0755,td-agent,td-agent) %dir %{_localstatedir}/log/@PACKAGE@/buffer
+%attr(0755,td-agent,td-agent) %dir %{_sysconfdir}/@PACKAGE@
+%attr(0755,td-agent,td-agent) %dir %{_sysconfdir}/@PACKAGE@/plugin
+# NOTE: %{_tmpfilesdir} is available since CentOS 7
+%attr(0755,td-agent,td-agent) %dir /tmp/@PACKAGE@
+%changelog
+* Wed Jul 14 2021 Takuro Ashie <ashie@clear-code.com> - 4.2.0-1
+- New upstream release.
+
+* Wed Apr 07 2021 Takuro Ashie <ashie@clear-code.com> - 4.1.1-1
+- New upstream release.
+
+* Fri Feb 19 2021 Masahiro Nakagawa <repeatedly@gmail.com> - 4.1.0-1
+- New upstream release.
+
+* Fri Aug 07 2020 Masahiro Nakagawa <repeatedly@gmail.com> - 4.0.1-1
+- New upstream release.
+
+* Tue Jun 30 2020 Masahiro Nakagawa <repeatedly@gmail.com> - 4.0.0-1
+- New upstream release.
+
+* Fri May 22 2020 Masahiro Nakagawa <repeatedly@gmail.com> - 4.0.0~rc1-1
+- New upstream release.
+
+* Wed May 06 2020 Takuro Ashie <ashie@clear-code.com> - 3.7.1-1
+- New upstream release.
+
+* Tue Apr 07 2020 Hiroshi Hatake <hatake@clear-code.com> - 3.7.0-1
+- New upstream release.
+
+* Tue Feb 25 2020 Takuro Ashie <ashie@clear-code.com> - 3.6.0-1
+- New upstream release.

@@ -1,0 +1,4 @@
+td-agent-apt-source source: changelog-should-mention-nmu
+td-agent-apt-source source: source-nmu-has-incorrect-version-number
+td-agent-apt-source source: package-uses-deprecated-debhelper-compat-version 9
+td-agent-apt-source source: ancient-standards-version 3.9.8 (released 2016-04-06) (current is 4.5.0)

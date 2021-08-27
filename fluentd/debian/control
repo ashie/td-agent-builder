@@ -1,0 +1,33 @@
+Source: fluentd
+Section: net
+Priority: optional
+Maintainer: Fluentd developers <fluentd@googlegroups.com>
+Uploaders: HATAKE Hiroshi <hatake@clear-code.com>
+Build-Depends:
+  debhelper (>= 10),
+  pkg-config,
+  zlib1g-dev,
+  ruby-dev,
+  ruby-bundler,
+  rake,
+  libedit2,
+  libncurses5-dev,
+  libyaml-dev,
+  libssl-dev
+Standards-Version: 4.3.0
+Homepage: https://www.fluentd.org/
+
+Package: fluentd
+Architecture: any
+Replaces: td-agent (<< 4.2.0-1)
+Breaks: td-agent (<< 4.2.0-1)
+Conflicts: td-agent (<< 4.2.0-1)
+Pre-Depends: adduser
+Depends:
+  ${misc:Depends},
+  ${shlibs:Depends},
+Description: Treasure Agent: A data collector for Treasure Data
+ Treasure Agent is all in one package which contains Fluentd and
+ related gem packages.
+ .
+ It is installable alongside with system's gem packages separately.

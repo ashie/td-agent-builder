@@ -1,0 +1,21 @@
+Source: td-agent-apt-source
+Section: misc
+Priority: important
+Maintainer: Fluentd developers <fluentd@googlegroups.com>
+Build-Depends:
+  debhelper (>= 9),
+  gnupg,
+  lsb-release
+Standards-Version: 3.9.8
+Homepage: https://www.fluentd.org/
+
+Package: td-agent-apt-source
+Section: misc
+Architecture: all
+Depends:
+  ${misc:Depends},
+  apt-transport-https,
+  gnupg
+Description: GnuPG archive key and APT source of the Treasure Agent archive
+ The Treasure Agent project digitally signs its Release files. This
+ package contains the archive key used for that.

@@ -1,0 +1,7 @@
+opt/*
+usr/bin/*
+usr/sbin/*
+usr/lib/tmpfiles.d/*
+etc/logrotate.d/*
+etc/td-agent/*
+lib/systemd/system/*

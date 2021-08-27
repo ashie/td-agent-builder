@@ -18,14 +18,22 @@
 PACKAGES = [
   "td-agent",
 ]
+FLUENTD_PACKAGES = [
+  "fluentd",
+]
 
 APT_SOURCE_PACKAGES = [
   "td-agent-apt-source"
+]
+FLUENTD_APT_SOURCE_PACKAGES = [
+  "fluentd-apt-source"
 ]
 
 ALL_PACKAGE = [
   "td-agent",
   "td-agent-apt-source",
+  "fluentd",
+  "fluentd-apt-source",
 ]
 
 def define_bulked_task(name, description, packages = PACKAGES)
@@ -33,7 +41,13 @@ def define_bulked_task(name, description, packages = PACKAGES)
   task name.to_sym do
     packages.each do |package|
       cd(package) do
-        ruby("-S", "rake", name.to_s)
+        # e.g. apt:fluentd_build => apt:build
+        prefixed_target = name.split(':', 2).last
+        if prefixed_target.start_with?("fluentd_")
+          ruby("-S", "rake", name.sub(/:fluentd_/, ':').to_s)
+        else
+          ruby("-S", "rake", name.to_s)
+        end
       end
     end
   end
@@ -47,8 +61,11 @@ end
   ["build:rpm_old_config", "Create configuration files for Red Hat like systems without systemd"],
   ["build:all",        "Install all components"],
   ["apt:build",        "Build deb packages"],
+  ["apt:fluentd_build","Build fluentd deb packages", FLUENTD_PACKAGES],
   ["yum:build",        "Build RPM packages"],
+  ["yum:fluentd_build","Build fluentd RPM packages", FLUENTD_PACKAGES],
   ["msi:build",        "Build MSI package (alias for msi:dockerbuild)"],
+  ["msi:fluentd_build","Build fluentd MSI package (alias for msi:dockerbuild)", FLUENTD_PACKAGES],
   ["msi:selfbuild",    "Build MSI package without using Docker"],
   ["msi:dockerbuild",  "Build MSI package by Docker"],
   ["dmg:selfbuild",    "Build macOS package without using Docker"],
@@ -58,6 +75,7 @@ end
 
 [
   ["apt:build", "Build td-agent-apt-source deb packages", APT_SOURCE_PACKAGES],
+  ["apt:fluentd_build", "Build fluentd-apt-source deb packages", FLUENTD_APT_SOURCE_PACKAGES],
 ].each do |params|
   define_bulked_task(*params)
 end
