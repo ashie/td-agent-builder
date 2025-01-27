@@ -578,6 +578,7 @@ class BuildTask
         cp("msi/assets/#{PACKAGE_NAME}-prompt.bat", fluent_package_staging_dir)
         cp("msi/assets/#{PACKAGE_NAME}-post-install.bat", staging_bindir)
         cp("msi/assets/#{PACKAGE_NAME}-post-migration.bat", staging_bindir)
+        cp("msi/assets/#{PACKAGE_NAME}-post-fluentdwinsvc.rb", staging_bindir)
         cp("msi/assets/#{SERVICE_NAME}.bat", fluent_package_staging_dir)
         cp("msi/assets/fluent-gem.bat", fluent_package_staging_dir)
         cp("msi/assets/#{PACKAGE_NAME}-version.rb", staging_bindir)
