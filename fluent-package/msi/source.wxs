@@ -185,8 +185,19 @@
     <Property Id="InstallFluentdWinSvc" Value=" "/>
     <CustomAction Id="SetInstallFluentdWinSvcCommand"
                   Property="InstallFluentdWinSvc"
-                  Value="&quot;[FLUENTPROJECTLOCATION]fluentd.bat&quot; --reg-winsvc i --reg-winsvc-delay-start --reg-winsvc-fluentdopt &quot;-c '[FLUENTPROJECTLOCATION]etc\fluent\fluentd.conf' -o '[FLUENTPROJECTLOCATION]fluentd.log'&quot;"/>
+                  Value="&quot;[FLUENTPROJECTLOCATION]fluentd.bat&quot; --reg-winsvc i --reg-winsvc-delay-start"/>
     <CustomAction Id="InstallFluentdWinSvc"
+                  BinaryKey="WixCA"
+                  DllEntry="WixQuietExec64"
+                  Execute="deferred"
+                  Return="check"
+                  Impersonate="no" />
+
+    <Property Id="InstallFluentdWinSvcFluentdopt" Value=" "/>
+    <CustomAction Id="SetInstallFluentdWinSvcFluentdoptCommand"
+                  Property="InstallFluentdWinSvcFluentdopt"
+                  Value="&quot;[FLUENTPROJECTLOCATION]bin\ruby.exe&quot; &quot;[FLUENTPROJECTLOCATION]bin\fluent-package-post-fluentdwinsvc.rb&quot; &quot;[FLUENTPROJECTLOCATION]&quot;"/>
+    <CustomAction Id="InstallFluentdWinSvcFluentdopt"
                   BinaryKey="WixCA"
                   DllEntry="WixQuietExec64"
                   Execute="deferred"
@@ -242,8 +253,11 @@
       <Custom Action="SetPostMigrationCommand" Before="PostMigration">WIX_UPGRADE_DETECTED</Custom>
       <Custom Action="PostMigration" Before="StartServices">WIX_UPGRADE_DETECTED</Custom>
 
-      <Custom Action="SetInstallFluentdWinSvcCommand" After="InstallFiles">NOT Installed</Custom>
+      <Custom Action="SetInstallFluentdWinSvcCommand" After="PostInstall">NOT Installed</Custom>
       <Custom Action="InstallFluentdWinSvc" After="SetInstallFluentdWinSvcCommand">NOT Installed</Custom>
+
+      <Custom Action="SetInstallFluentdWinSvcFluentdoptCommand" After="InstallFluentdWinSvc">NOT Installed OR WIX_UPGRADE_DETECTED</Custom>
+      <Custom Action="InstallFluentdWinSvcFluentdopt" After="SetInstallFluentdWinSvcFluentdoptCommand">NOT Installed OR WIX_UPGRADE_DETECTED</Custom>
 
       <Custom Action="SetCreateCompatTdAgentBat" Before="InstallFinalize">NOT Installed</Custom>
       <Custom Action="CreateCompatTdAgentBat" After="SetCreateCompatTdAgentBat">NOT Installed</Custom>
